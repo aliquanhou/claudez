@@ -1,0 +1,9 @@
+{
+  "name": "@claudez/harness-linux-x64",
+  "version": "1.0.0",
+  "description": "ClaudeZ Harness — Linux x64 原生二进制",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin/"]
+}

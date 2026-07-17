@@ -1,0 +1,9 @@
+{
+  "name": "@claudez/harness-darwin-arm64",
+  "version": "1.0.0",
+  "description": "ClaudeZ Harness — macOS ARM64 原生二进制",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/"]
+}

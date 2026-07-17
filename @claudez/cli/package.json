@@ -1,0 +1,26 @@
+{
+  "name": "@claudez/cli",
+  "version": "1.0.0",
+  "description": "ClaudeZ — 动态提示词驱动的自主 AI 智能体 CLI",
+  "license": "MIT",
+  "bin": {
+    "claudez": "./bin/claudez.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.js",
+    "start": "claudez"
+  },
+  "optionalDependencies": {
+    "@claudez/harness-win32-x64": "1.0.0",
+    "@claudez/harness-darwin-arm64": "1.0.0",
+    "@claudez/harness-linux-x64": "1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

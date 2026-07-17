@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+logs/
+*.log
+.claudez/
+.workflow_checkpoints/
+.artifacts/
+debug_log.json
+
+# Config with API keys
+config.json
+config.json.example
+
+# Node
+node_modules/
+
+# Generated build artifacts
+IdeaCanvas/
+snake_game/debug.keystore
+snake_game/build/
+*.apk
+*.aab
+*.keystore
+gradle-8.1/
+*.zip
+
+# Session data
+sessions/
