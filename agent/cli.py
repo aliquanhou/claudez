@@ -28,9 +28,27 @@ def load_config(config_path: str = "") -> dict:
     return {}
 
 
+def init_plugins():
+    """初始化插件系统。"""
+    try:
+        from .plugin_manager import get_plugin_manager
+        from .tools import get_registry
+        pm = get_plugin_manager()
+        pm.set_tool_registry(get_registry())
+        discovered = pm.discover()
+        loaded = pm.load_all()
+        if discovered or loaded:
+            print(f"[ClaudeZ] 插件: 发现 {len(discovered)} 个, 加载 {loaded} 个", file=sys.stderr)
+    except Exception as e:
+        import traceback
+        print(f"[ClaudeZ] 插件初始化失败: {e}", file=sys.stderr)
+        traceback.print_exc()
+
+
 def main():
     """CLI 主入口。"""
     import argparse
+    init_plugins()
 
     parser = argparse.ArgumentParser(description="ClaudeZ — 动态提示词驱动的 AI 智能体")
     parser.add_argument("message", nargs="*", help="直接输入消息（非交互模式）")

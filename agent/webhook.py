@@ -156,7 +156,7 @@ def create_webhook_app():
     app = FastAPI(
         title="ClaudeZ Webhook",
         description="远程触发 ClaudeZ Agent 执行任务",
-        version="1.0.0",
+        version="2.1.0",
     )
 
     class TriggerRequest(BaseModel):

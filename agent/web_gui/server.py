@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import queue as q_module
 import socket
@@ -34,6 +35,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+_log = logging.getLogger("claudez.web_server")
 
 
 HERE = Path(__file__).parent
@@ -118,8 +121,42 @@ class WebServer:
 
         self._last_text = ""
 
+        # 插件系统
+        from agent.plugin_manager import get_plugin_manager
+        self._plugin_manager = get_plugin_manager()
+        self._plugins_initialized = False
+
         self.app = FastAPI(title="ClaudeZ Web")
         self._register_routes()
+
+    def _init_plugins(self):
+        """初始化插件系统。"""
+        if self._plugins_initialized:
+            return
+        self._plugins_initialized = True
+
+        # 连接 ToolRegistry
+        from agent.tools import get_registry
+        registry = get_registry()
+        self._plugin_manager.set_tool_registry(registry)
+
+        # 发现插件
+        discovered = self._plugin_manager.discover()
+        _log.info("插件系统初始化: 发现 %d 个插件", len(discovered))
+
+        # 自动加载所有插件
+        loaded = self._plugin_manager.load_all()
+        _log.info("插件系统: 已加载 %d 个插件", loaded)
+
+        # 注册变化回调（通知前端刷新）
+        self._plugin_manager.on_changed(self._on_plugins_changed)
+
+    def _on_plugins_changed(self):
+        """插件状态变化时推送事件到前端。"""
+        self._push_sse("plugins_changed", {
+            "plugin_count": len(self._plugin_manager.get_all_plugins()),
+            "enabled_count": len(self._plugin_manager.get_enabled_plugins()),
+        })
 
     def _register_routes(self):
         app = self.app
@@ -303,6 +340,168 @@ class WebServer:
             if not self.agent or not hasattr(self.agent, 'debug'):
                 return {"summary": {}}
             return self.agent.debug.data.get("summary", {})
+
+        @app.get("/api/debug/plugins")
+        async def api_debug_plugins():
+            """获取插件调试日志（从插件实例获取，规避 importlib 模块隔离）。"""
+            try:
+                pm = self._plugin_manager if hasattr(self, '_plugin_manager') else None
+                logs = []
+                plugin_info = {}
+                if pm:
+                    for p in pm.get_all_plugins():
+                        plugin_info[p.id] = {
+                            "name": p.name,
+                            "enabled": p.enabled,
+                            "tool_count": len(p.tools or []),
+                            "masked": list(getattr(p.instance, '_masked', set())) if p.instance else [],
+                        }
+                    # 从 host-tools 插件实例获取调试日志（解决 importlib 隔离问题）
+                    host = pm.get_plugin("com.claudez.plugins.host-tools")
+                    if host and host.instance and hasattr(host.instance, 'get_debug_logs'):
+                        logs = host.instance.get_debug_logs()
+                return {"logs": logs[-200:], "plugins": plugin_info}
+            except Exception as e:
+                return {"logs": [], "plugins": {}, "error": str(e)}
+
+        # ── 插件 API ──
+
+        @app.get("/api/plugins")
+        async def api_get_plugins():
+            """获取所有插件及工具列表。
+
+            返回:
+            {
+                "plugins": [...],         # 插件列表（含 enabled/disabled）
+                "tools": [...],           # 所有已启用的工具（含 masked 标记）
+                "tools_by_category": {...}
+            }
+            """
+            self._init_plugins()
+            pm = self._plugin_manager
+
+            plugins = [p.to_dict() for p in pm.get_all_plugins()]
+
+            # 收集所有探测到的工具（含被屏蔽的）——从 host-tools 插件获取
+            all_tools = []
+            host_plugin = pm.get_plugin("com.claudez.plugins.host-tools")
+            if host_plugin and host_plugin.instance and hasattr(host_plugin.instance, 'get_all_probed'):
+                all_tools = host_plugin.instance.get_all_probed()
+            else:
+                # 降级：只有 tools 属性
+                all_tools = pm.get_all_tools()
+
+            tools_by_category = pm.get_tools_by_category()
+
+            return {
+                "plugins": plugins,
+                "tools": all_tools,
+                "tools_by_category": tools_by_category,
+            }
+
+        @app.post("/api/plugins/discover")
+        async def api_discover_plugins():
+            """重新扫描并重新探测全部插件，重新注册工具到 Agent。"""
+            self._init_plugins()
+            pm = self._plugin_manager
+            discovered = pm.discover()
+            total_tools = 0
+            for p in pm.get_all_plugins():
+                if p.instance and hasattr(p.instance, 'probe'):
+                    try:
+                        p.instance.probe(force=True)
+                        pm.reload(p.id)
+                        total_tools += len(p.tools or [])
+                    except Exception as e:
+                        _log.warning("re-probe 失败 %s: %s", p.id, e)
+            return {
+                "discovered": len(discovered),
+                "tool_count": total_tools,
+            }
+
+        @app.post("/api/plugins/{plugin_id}/reprobe")
+        async def api_reprobe_plugin(plugin_id: str):
+            """强制重新探测指定插件并重新注册工具。"""
+            self._init_plugins()
+            pm = self._plugin_manager
+            p = pm.get_plugin(plugin_id)
+            if not p:
+                return {"success": False, "message": "插件未找到"}
+            if not p.instance or not hasattr(p.instance, 'probe'):
+                return {"success": False, "message": "插件不支持重新探测"}
+            try:
+                p.instance.probe(force=True)
+                pm.reload(plugin_id)
+                return {"success": True, "tool_count": len(p.tools or [])}
+            except Exception as e:
+                _log.error("reprobe 失败 %s: %s", plugin_id, e)
+                return {"success": False, "message": str(e)}
+
+        @app.post("/api/plugins/{plugin_id}/load")
+        async def api_load_plugin(plugin_id: str):
+            """加载指定插件。"""
+            self._init_plugins()
+            success = self._plugin_manager.load(plugin_id)
+            return {"success": success}
+
+        @app.post("/api/plugins/{plugin_id}/unload")
+        async def api_unload_plugin(plugin_id: str):
+            """卸载指定插件。"""
+            self._init_plugins()
+            success = self._plugin_manager.unload(plugin_id)
+            return {"success": success}
+
+        @app.get("/api/plugins/{plugin_id}/tools")
+        async def api_get_plugin_tools(plugin_id: str):
+            """获取指定插件的工具列表。"""
+            self._init_plugins()
+            plugin = self._plugin_manager.get_plugin(plugin_id)
+            if not plugin:
+                return {"error": "插件未找到"}
+            return {"tools": plugin.tools, "enabled": plugin.enabled}
+
+        # ── 主机工具链：单工具屏蔽/恢复 ──
+
+        @app.post("/api/plugins/com.claudez.plugins.host-tools/tools/{tool_name}/mask")
+        async def api_mask_host_tool(tool_name: str):
+            """屏蔽单个主机工具（不再挂载给 Agent）。"""
+            pm = self._plugin_manager
+            plugin = pm.get_plugin("com.claudez.plugins.host-tools")
+            if not plugin or not plugin.instance:
+                return {"success": False, "message": "插件未加载"}
+            if not hasattr(plugin.instance, 'mask_tool'):
+                return {"success": False, "message": "不支持"}
+            ok = plugin.instance.mask_tool(tool_name)
+            if ok:
+                # 从 ToolRegistry 注销
+                from agent.tools import get_registry
+                get_registry().unregister_host_tool(tool_name)
+                # 刷新插件工具列表
+                plugin.tools = plugin.instance.get_tools()
+                return {"success": True}
+            return {"success": False, "message": "工具未找到"}
+
+        @app.post("/api/plugins/com.claudez.plugins.host-tools/tools/{tool_name}/unmask")
+        async def api_unmask_host_tool(tool_name: str):
+            """恢复被屏蔽的主机工具。"""
+            pm = self._plugin_manager
+            plugin = pm.get_plugin("com.claudez.plugins.host-tools")
+            if not plugin or not plugin.instance:
+                return {"success": False, "message": "插件未加载"}
+            if not hasattr(plugin.instance, 'unmask_tool'):
+                return {"success": False, "message": "不支持"}
+            plugin.instance.unmask_tool(tool_name)
+            # 重新注册到 ToolRegistry
+            meta = {"name": tool_name}
+            for rule in getattr(plugin.instance, '_probe_rules', []):
+                if rule.get("name") == tool_name:
+                    meta = rule
+                    break
+            from agent.tools import get_registry
+            get_registry().register_host_tool(tool_name, meta, plugin)
+            # 刷新工具列表
+            plugin.tools = plugin.instance.get_tools()
+            return {"success": True}
 
         @app.get("/{filename:path}")
         async def serve_static(filename: str):

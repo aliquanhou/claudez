@@ -38,7 +38,7 @@ import (
 // ── 版本信息 ──
 
 const (
-	Version    = "1.0.0"
+	Version    = "2.1.0"
 	Codename   = "ClaudeZ"
 	BuildDate  = "2026-07-17"
 )

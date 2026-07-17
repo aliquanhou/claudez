@@ -1,6 +1,6 @@
 {
   "name": "@claudez/harness-win32-x64",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "ClaudeZ Harness — Windows x64 原生二进制",
   "license": "MIT",
   "os": ["win32"],

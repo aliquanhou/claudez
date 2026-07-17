@@ -1,6 +1,6 @@
 {
   "name": "@claudez/cli",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "ClaudeZ — 动态提示词驱动的自主 AI 智能体 CLI",
   "license": "MIT",
   "bin": {

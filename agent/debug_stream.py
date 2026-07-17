@@ -23,7 +23,7 @@ from typing import Any
 class DebugCollector:
     """结构化调试数据收集器。"""
 
-    def __init__(self, session_id: str = "", model: str = "", version: str = "2.0"):
+    def __init__(self, session_id: str = "", model: str = "", version: str = "2.1"):
         self.session_id = session_id
         self.start_time = time.time()
         self.data: dict[str, Any] = {

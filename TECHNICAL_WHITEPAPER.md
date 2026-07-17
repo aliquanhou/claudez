@@ -1,8 +1,8 @@
 # ClaudeZ 技术白皮书 (Technical Whitepaper)
 
-> 版本 2.0 | 2026-07-17
+> 版本 2.1 | 2026-07-18
 > 
-> 一个动态提示词驱动的自主 AI 智能体框架
+> 专业为 DeepSeek 打造的 Model + Harness = Agent 框架
 
 ---
 

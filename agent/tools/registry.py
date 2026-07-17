@@ -31,6 +31,7 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Tool] = {}
         self._context = ToolContext()
+        self._host_tool_plugins: dict = {}
 
     def set_context(self, ctx: ToolContext):
         """设置全局执行上下文。"""
@@ -146,6 +147,88 @@ class ToolRegistry:
         if not tool:
             return ToolResult(error=f"未知工具: {name}")
         return tool.execute(args, self._context)
+
+    # ── 主机工具（插件）管理 ──
+
+    def register_host_tool(self, name: str, tool_def: dict, plugin_info=None):
+        """注册主机工具（来自插件）。
+
+        创建一个带有 args 参数的 Tool 对象，LLM 可见并可调用。
+        tool_def 格式:
+          {
+              "name": "node",
+              "display_name": "Node.js",
+              "version": "v20.11.0",
+              "category": "command",
+              "icon": "🔵",
+              "exec_path": "/usr/bin/node",
+              "description": "...",
+          }
+        """
+        from pydantic import BaseModel, Field
+
+        # 为宿主工具动态创建输入 Schema，使 LLM 知道如何传参
+        exec_path = tool_def.get("exec_path", name)
+
+        class HostToolInput(BaseModel):
+            args: str = Field(
+                default="",
+                description=f"传给 {name} 的命令行参数，例如 '--version' 或 'hello.py'"
+            )
+
+        def execute_host(args: str = "") -> str:
+            """执行主机工具。"""
+            return self._execute_host_tool(name, args)
+
+        desc = tool_def.get("description", tool_def.get("display_name", name))
+        desc += f" (路径: {exec_path})"
+        cat = tool_def.get("category", "general")
+
+        tool = Tool(
+            name=name,
+            description=desc,
+            input_schema=HostToolInput,
+            category=cat,
+            is_readonly=True,
+            is_concurrency_safe=False,
+            timeout=60,
+        )(execute_host)
+
+        self._tools[name] = tool
+        if plugin_info:
+            self._host_tool_plugins[name] = plugin_info
+
+    def unregister_host_tool(self, name: str):
+        """注销主机工具。"""
+        self._tools.pop(name, None)
+        self._host_tool_plugins.pop(name, None)
+
+    def get_host_tools(self) -> list[dict]:
+        """获取所有主机工具定义。"""
+        result = []
+        for name, plugin_info in self._host_tool_plugins.items():
+            tool = self._tools.get(name)
+            if tool:
+                result.append({
+                    "name": name,
+                    "display_name": name,
+                    "category": tool.category,
+                    "source": "host",
+                    "plugin_id": plugin_info.id if plugin_info else "",
+                })
+        return result
+
+    def _execute_host_tool(self, name: str, args: str) -> str:
+        """执行主机工具（委托给插件管理器）。"""
+        from ..plugin_manager import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_info = self._host_tool_plugins.get(name)
+        if not plugin_info:
+            return f"[错误] 主机工具 {name} 没有关联插件"
+        result = pm.execute(plugin_info.id, name, args.split() if args else [])
+        if "error" in result:
+            return f"[错误] {result['error']}"
+        return result.get("output", str(result))
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools

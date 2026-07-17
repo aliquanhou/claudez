@@ -254,6 +254,40 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
 .tn{flex:1;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis}
 .tc{font-size:9px;color:var(--fg-3);background:rgba(255,255,255,0.03);padding:0 5px;border-radius:3px}
 
+/* Host tools */
+.host-tool{background:rgba(124,58,237,0.04);border-left:2px solid rgba(124,58,237,0.2)}
+.host-tool:hover{background:rgba(124,58,237,0.08);border-color:rgba(124,58,237,0.3)!important}
+.tv{font-size:9px;color:#8aa0d0;background:rgba(255,255,255,0.03);padding:0 6px;border-radius:8px;white-space:nowrap;flex-shrink:0}
+.unmount-btn{background:none;border:none;color:var(--fg-3);cursor:pointer;font-size:10px;padding:0 2px;transition:var(--t);opacity:0.5;flex-shrink:0}
+.unmount-btn:hover{color:var(--accent6);opacity:1}
+
+/* Plugin panel */
+.plug-sec{margin:6px 8px}
+.plug-hdr{font-size:12px;font-weight:600;color:var(--fg-3);text-transform:uppercase;letter-spacing:.5px;padding:8px 4px 6px;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;gap:6px}
+.plug-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);border-radius:var(--r-sm);padding:8px 10px;margin:4px 0;transition:var(--t)}
+.plug-card:hover{border-color:rgba(255,255,255,0.1);background:rgba(255,255,255,0.03)}
+.plug-card-header{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.plug-icon{font-size:16px;flex-shrink:0}
+.plug-name{font-weight:600;font-size:13px;color:var(--fg);flex:1}
+.plug-version{font-size:10px;color:var(--fg-3);padding:1px 6px;background:rgba(255,255,255,0.04);border-radius:6px}
+.plug-status{font-size:11px;padding:1px 8px;border-radius:8px}
+.plug-status.on{background:rgba(52,211,153,0.1);color:var(--accent4)}
+.plug-status.off{background:rgba(239,68,68,0.1);color:var(--accent6)}
+.plug-desc{font-size:11px;color:var(--fg-2);margin:3px 0 5px;line-height:1.4}
+.plug-meta{display:flex;gap:12px;font-size:10px;color:var(--fg-3);margin-bottom:5px}
+.plug-tools{display:flex;flex-wrap:wrap;gap:2px;margin:4px 0}
+.plug-tag{font-size:10px;padding:1px 7px;border-radius:6px;background:rgba(255,255,255,0.03);color:var(--fg-2);font-family:var(--font-mono);border:1px solid rgba(255,255,255,0.04)}
+.plug-tag.host{border-left:2px solid rgba(124,58,237,0.4)}
+.plug-actions{display:flex;gap:4px;margin-top:5px}
+.plug-btn{font-size:11px;padding:3px 12px;border-radius:6px;border:1px solid var(--bd);background:rgba(255,255,255,0.03);color:var(--fg-2);cursor:pointer;font-family:inherit;transition:var(--t)}
+.plug-btn:hover{background:rgba(255,255,255,0.07);border-color:var(--accent)}
+.plug-btn.load{color:var(--accent4);border-color:rgba(52,211,153,0.2)}
+.plug-btn.load:hover{background:rgba(52,211,153,0.08)}
+.plug-btn.unload{color:var(--accent6);border-color:rgba(239,68,68,0.2)}
+.plug-btn.unload:hover{background:rgba(239,68,68,0.08)}
+.plug-empty{padding:30px 10px;text-align:center;color:var(--fg-3);font-size:12px}
+.plug-loading{padding:20px;text-align:center;color:var(--fg-3);font-size:12px}
+
 /* Events */
 .ev-fil{display:flex;gap:2px;padding:6px 8px;flex-wrap:wrap;border-bottom:1px solid rgba(255,255,255,0.03)}
 .ev-f{font-size:10px;padding:2px 7px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--fg-3);cursor:pointer;font-family:inherit;transition:var(--t)}
@@ -348,12 +382,18 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
     <div id="side">
       <div class="panel-tabs">
         <button class="p-tab active" data-t="tools">🛠 工具</button>
+        <button class="p-tab" data-t="plugs">🧩 插件</button>
         <button class="p-tab" data-t="ev">📡 事件</button>
         <button class="p-tab" data-t="dbg">🐛 调试</button>
         <button class="p-tab" data-t="cfg">⚙ 配置</button>
       </div>
       <div class="p-body">
-        <div class="p-content active" id="pn-tools"><div id="tools-c"></div></div>
+        <div class="p-content active" id="pn-tools">
+          <div id="tools-c"></div>
+        </div>
+        <div class="p-content" id="pn-plugs">
+          <div id="plugs-c"></div>
+        </div>
         <div class="p-content" id="pn-ev"><div class="ev-fil" id="ev-fil"></div><div id="ev-c"><div style="padding:20px;text-align:center;color:var(--fg-3);font-size:12px">等待事件...</div></div></div>
         <div class="p-content" id="pn-cfg"><div class="cfg-sec" id="cfg-c"></div></div>
         <div class="p-content" id="pn-dbg">
@@ -365,6 +405,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
             <div id="dbg-summary" style="font-size:12px;color:var(--fg-2)">
               运行 Agent 后自动生成调试数据
             </div>
+            <div style="margin-top:10px;border-top:1px solid var(--bd);padding-top:8px">
+              <div style="font-size:11px;font-weight:600;color:var(--fg-3);margin-bottom:4px">🧩 插件调试</div>
+              <button class="hd-btn" style="width:100%;margin-bottom:4px" onclick="C.updatePluginDebug()">🔍 刷新插件日志</button>
+              <div id="dbg-plugins" style="font-size:11px;color:var(--fg-2);max-height:200px;overflow-y:auto">
+                点击"刷新插件日志"查看探测详情
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -372,6 +419,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=2.0"></script>
 </body>
 </html>

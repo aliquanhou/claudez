@@ -138,7 +138,7 @@ class Agent:
         self.debug = DebugCollector(
             session_id=self.session.id,
             model=self.config["model"],
-            version="2.0",
+            version="2.1",
         )
 
         _log.info("agent_init  model=%s provider=%s permission=%s",

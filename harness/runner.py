@@ -34,6 +34,17 @@ class HarnessRunner:
         self._running = False
         self._current_stream_text = ""
 
+        # 初始化插件系统
+        try:
+            from agent.plugin_manager import get_plugin_manager
+            from agent.tools import get_registry
+            pm = get_plugin_manager()
+            pm.set_tool_registry(get_registry())
+            pm.discover()
+            pm.load_all()
+        except Exception:
+            pass
+
         # 注册 IPC 处理器
         self.ipc.register_handler("ping", self._handle_ping)
         self.ipc.register_handler("shutdown", self._handle_shutdown)

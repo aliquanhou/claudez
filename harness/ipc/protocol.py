@@ -201,7 +201,7 @@ class IPCClient:
         # 发送 HELLO
         self.send_event(EventType.STATUS, {
             "status": "ready",
-            "version": "1.0.0",
+            "version": "2.1.0",
             "pid": threading.get_native_id() if hasattr(threading, 'get_native_id') else 0,
         })
 

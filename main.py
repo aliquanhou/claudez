@@ -14,6 +14,21 @@ import sys
 # 注册内置工具（必须在 Agent 创建前 import）
 from agent.tools import builtin  # noqa: F401
 
+# 初始化插件系统
+from agent.plugin_manager import get_plugin_manager
+
+
+def init_plugins():
+    """初始化插件系统：发现 + 加载所有插件。"""
+    pm = get_plugin_manager()
+    from agent.tools import get_registry
+    registry = get_registry()
+    pm.set_tool_registry(registry)
+    discovered = pm.discover()
+    loaded = pm.load_all()
+    if discovered or loaded:
+        print(f"  [插件] 发现 {len(discovered)} 个, 已加载 {loaded} 个")
+
 
 def main():
     """主入口。"""
@@ -33,6 +48,8 @@ def _run_web():
     from agent.web_gui.server import start
     from agent.core import Agent
     from agent.cli import load_config
+
+    init_plugins()  # 先初始化插件
 
     config = load_config()
 
