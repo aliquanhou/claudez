@@ -203,6 +203,9 @@ class Agent:
             messages = self.session.get_recent_messages(self.config["max_context_messages"])
             if self._should_compress(messages):
                 messages = self._compress_context(messages)
+            # 确保 messages 不为空
+            if not messages:
+                messages = [{"role": "user", "content": user_message, "timestamp": time.time()}]
 
             system_prompt = self._build_prompt()
             tools = get_all_tools()
@@ -333,14 +336,20 @@ class Agent:
     # ── 上下文压缩 ──
 
     def _should_compress(self, messages: list[dict]) -> bool:
-        """检查是否触发上下文压缩。"""
-        if self.config.get("max_context_messages", 50) <= 0:
+        """检查是否触发上下文压缩。
+
+        策略：当消息数超过 max_context_messages 的 70% 时触发压缩。
+        使用绝对阈值而非比例，因为 get_recent_messages 已截断。
+        """
+        threshold = self.config.get("max_context_messages", 50)
+        if threshold <= 0:
             return False
-        ratio = len(messages) / self.config["max_context_messages"]
-        return ratio >= self.config.get("context_compress_at", 0.85)
+        # 当消息数达到阈值的 70% 时触发压缩
+        compress_at = int(threshold * self.config.get("context_compress_at", 0.85))
+        return len(messages) >= compress_at
 
     def _compress_context(self, messages: list[dict]) -> list[dict]:
-        """压缩上下文：按工具调用轮次分组，只保留首尾。
+        """压缩上下文：按工具调用轮次分组，保留首尾。
 
         策略（参考 Claude Code 上下文管理）：
           - 保留第一条 user 消息（用户原始目标）
@@ -355,16 +364,25 @@ class Agent:
         if len(messages) < 10:
             return messages
 
-        # 保留第 0 条（第一个 user 消息 = 原始任务目标）
-        keep = [messages[0]]
+        # 找到第一条 user 消息作为锚点
+        first_user_idx = -1
+        for i, m in enumerate(messages):
+            if m.get("role") == "user":
+                first_user_idx = i
+                break
 
-        # 将第 1 条之后的消息按 assistant(tool_calls) 分割为"轮次"
+        if first_user_idx < 0:
+            # 没有 user 消息，直接返回全部
+            return messages
+
+        keep = [messages[first_user_idx]]
+
+        # 将锚点之后的消息按 assistant(tool_calls) 分割为"轮次"
         rounds: list[list[dict]] = []
         current: list[dict] = []
-        for m in messages[1:]:
+        for m in messages[first_user_idx + 1:]:
             if m.get("tool_calls") and m.get("role") == "assistant":
                 if current:
-                    # 前面的 tool 响应归入上一轮
                     rounds.append(current)
                 current = [m]
             else:

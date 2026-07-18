@@ -152,6 +152,8 @@ class SemanticMemory:
                 results = self._collection.query(**kwargs)
 
                 items = []
+                if not results.get("ids") or not results["ids"][0]:
+                    return []
                 for i in range(len(results["ids"][0])):
                     distance = results["distances"][0][i] if results.get("distances") else 0
                     score = max(0.0, 1.0 - distance)  # 距离→相似度
@@ -194,7 +196,8 @@ class SemanticMemory:
 
                 items.sort(key=lambda x: x["score"], reverse=True)
                 return items[:n_results]
-        except Exception:
+        except Exception as e:
+            print(f"[记忆] search 失败: {e}")
             return []
 
     def delete(self, mem_id: str) -> bool:
@@ -208,7 +211,8 @@ class SemanticMemory:
                 self._sql_conn.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
                 self._sql_conn.commit()
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[记忆] delete 失败: {e}")
             return False
 
     def count(self) -> int:
@@ -221,7 +225,8 @@ class SemanticMemory:
             else:
                 cursor = self._sql_conn.execute("SELECT COUNT(*) FROM memories")
                 return cursor.fetchone()[0]
-        except Exception:
+        except Exception as e:
+            print(f"[记忆] count 失败: {e}")
             return 0
 
     def clear(self):
