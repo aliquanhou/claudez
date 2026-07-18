@@ -254,10 +254,40 @@ class Agent:
                         set_stream_callback(None)
 
                 results: list[tuple[str, dict, str, str]] = []
+                # 分离并发安全工具和串行工具
+                from agent.tools.registry import get_registry
+                _reg = get_registry()
+
+                concurrency_safe_tasks = []
+                serial_tasks = []
                 for n, a, cid, pre in tool_tasks:
                     if pre is not None:
                         results.append((n, a, cid, pre))
                         continue
+                    tool_obj = _reg.get(n)
+                    if tool_obj and tool_obj.is_concurrency_safe:
+                        concurrency_safe_tasks.append((n, a, cid))
+                    else:
+                        serial_tasks.append((n, a, cid))
+
+                # 并发执行 safe 工具
+                if concurrency_safe_tasks:
+                    with ThreadPoolExecutor(max_workers=8) as pool:
+                        fut_map = {}
+                        for n, a, cid in concurrency_safe_tasks:
+                            fut = pool.submit(_exec, n, a, cid)
+                            fut_map[fut] = (n, a, cid)
+                        for fut in as_completed(fut_map):
+                            n, a, cid = fut_map[fut]
+                            try:
+                                r = fut.result()
+                            except Exception as e:
+                                r = f"[错误] {e}"
+                            self.debug.log_tool_call(n, a, r, 0, not r.startswith("[错误]"))
+                            results.append((n, a, cid, r))
+
+                # 串行执行其余工具
+                for n, a, cid in serial_tasks:
                     _t0 = time.time()
                     r = _exec(n, a, cid)
                     self.debug.log_tool_call(n, a, r, (time.time()-_t0)*1000, not r.startswith("[错误]"))
@@ -294,6 +324,20 @@ class Agent:
                     else:
                         self._consecutive_errors = 0
 
+                # ★ 自动存储本轮记忆
+                if self.semantic_memory:
+                    tool_summary = "; ".join(
+                        f"{n}({'成功' if not r.startswith('[错误]') and not r.startswith('[超时]') else '失败'})"
+                        for n, a, cid, r in results[:5]
+                    )
+                    if tool_summary:
+                        self.store_memory(f"工具调用: {tool_summary}", "tool_use")
+                    for n, a, cid, r in results[:3]:
+                        if not r.startswith("[错误]") and not r.startswith("[超时]"):
+                            brief = r.strip()[:200]
+                            if brief:
+                                self.store_memory(f"[{n}] {brief}", "tool_result")
+
                 if not self._running:
                     break
                 continue
@@ -303,6 +347,11 @@ class Agent:
                 self.session.add_message("assistant", response.content)
                 if self.on_message:
                     self.on_message("assistant", response.content)
+                # ★ 存储最终回复到记忆
+                if self.semantic_memory:
+                    content_snip = response.content.strip()[:300]
+                    if len(content_snip) > 50:
+                        self.store_memory(f"回答: {content_snip}", "conversation")
             final_response = response.content
             break
 

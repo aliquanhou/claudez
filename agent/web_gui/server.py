@@ -268,26 +268,42 @@ class WebServer:
         @app.post("/api/config")
         async def api_set_config(body: dict):
             if self.agent:
+                needs_recreate = False
                 if "model" in body:
                     self.agent.config["model"] = body["model"]
                 if "provider" in body:
                     self.agent.config["provider"] = body["provider"]
+                    needs_recreate = True
+                if "base_url" in body:
+                    self.agent.config["base_url"] = body["base_url"]
+                    needs_recreate = True
+                if "api_key" in body and body["api_key"]:
+                    # 更新内存中的 key（不存到 config.json）
+                    self.agent.config["api_key"] = body["api_key"]
+                    # 同时设置环境变量方便子进程继承
+                    os.environ["CLAUDEZ_API_KEY"] = body["api_key"]
+                    needs_recreate = True
+                if "workflow_mode" in body:
+                    self.agent.set_workflow_mode(body["workflow_mode"])
+                # 有影响 provider 的变更时重新创建 provider 实例
+                if needs_recreate:
                     from agent.providers import create_provider
                     self.agent.provider = create_provider(self.agent.config)
                     self.agent._setup_provider_callbacks()
-                if "workflow_mode" in body:
-                    self.agent.set_workflow_mode(body["workflow_mode"])
             return {"status": "ok"}
 
         @app.get("/api/config")
         async def api_get_config():
             if not self.agent:
-                return {"provider": "", "model": "", "workflow_mode": ""}
+                return {"provider": "", "model": "", "workflow_mode": "", "base_url": ""}
+            cfg = self.agent.config
             return {
-                "provider": self.agent.config.get("provider", ""),
-                "model": self.agent.config.get("model", ""),
-                "workflow_mode": self.agent.config.get("workflow_mode", "agent"),
-                "tool_count": 0,
+                "provider": cfg.get("provider", ""),
+                "model": cfg.get("model", ""),
+                "workflow_mode": cfg.get("workflow_mode", "agent"),
+                "base_url": cfg.get("base_url", ""),
+                "api_key_configured": bool(cfg.get("api_key") or os.environ.get("CLAUDEZ_API_KEY")),
+                "tool_count": len(self.agent.session.messages) if self.agent else 0,
             }
 
         @app.get("/api/context")
@@ -363,6 +379,79 @@ class WebServer:
                 return {"logs": logs[-200:], "plugins": plugin_info}
             except Exception as e:
                 return {"logs": [], "plugins": {}, "error": str(e)}
+
+        # ── 记忆系统 API ──
+
+        @app.get("/api/memory")
+        async def api_memory_stats():
+            """获取记忆系统状态。"""
+            try:
+                from agent.memory import get_semantic_memory, ShortTermMemory
+                mem = get_semantic_memory()
+                stm = ShortTermMemory()
+                stats = {"semantic_enabled": False, "semantic_count": 0, "short_term_facts": len(stm.facts), "short_term_notes": len(stm.notes)}
+                recent = []
+                if mem:
+                    try:
+                        stats["semantic_enabled"] = True
+                        stats["semantic_count"] = mem.count()
+                        recent = mem.get_recent(10)
+                    except Exception:
+                        pass
+                return {"stats": stats, "recent": recent}
+            except Exception as e:
+                return {"stats": {"error": str(e)}, "recent": []}
+
+        @app.post("/api/memory/search")
+        async def api_memory_search(body: dict):
+            """搜索记忆。"""
+            query = body.get("query", "")
+            top_k = min(int(body.get("top_k", 5)), 50)
+            if not query:
+                return {"results": []}
+            try:
+                from agent.memory import get_semantic_memory
+                mem = get_semantic_memory()
+                if not mem:
+                    return {"results": [], "error": "语义记忆未启用"}
+                results = mem.search(query, n_results=top_k)
+                return {"results": results}
+            except Exception as e:
+                return {"results": [], "error": str(e)}
+
+        @app.post("/api/memory/store")
+        async def api_memory_store(body: dict):
+            """手动存储一条记忆。"""
+            content = body.get("content", "").strip()
+            mem_type = body.get("type", "note")
+            if not content or len(content) < 5:
+                return {"status": "error", "message": "记忆内容至少 5 个字符"}
+            try:
+                from agent.memory import get_semantic_memory
+                mem = get_semantic_memory()
+                if not mem:
+                    return {"status": "error", "message": "语义记忆未启用（ChromaDB 不可用）"}
+                ok = mem.store(content, {"type": mem_type})
+                if ok:
+                    return {"status": "ok"}
+                return {"status": "error", "message": "存储失败"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        @app.post("/api/memory/clear")
+        async def api_memory_clear():
+            """清空所有记忆。"""
+            try:
+                from agent.memory import get_semantic_memory
+                mem = get_semantic_memory()
+                if mem:
+                    mem.clear()
+                from agent.memory.short_term import ShortTermMemory
+                stm = ShortTermMemory()
+                stm.clear()
+                return {"status": "ok"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
         # ── 插件 API ──
 
@@ -574,7 +663,9 @@ class WebServer:
         })
 
         result = agent.run(text)
-        if result:
+        # 文本已通过 on_stream 逐块推送，不需要再 push 一遍
+        # 但如果流式回调未覆盖（如无 stream 的场景），在这里兜底
+        if result and not agent.on_stream:
             handler.on_text(result)
 
     def _push_sse(self, event_type: str, payload: Any):

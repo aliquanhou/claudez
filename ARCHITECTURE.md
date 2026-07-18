@@ -1,24 +1,24 @@
-# ClaudeZ 架构指南 (Architecture Guide)
+# ClaudeZ Architecture Guide
 
-## 模块依赖关系
+## Module Dependency
 
 ```
 main.py
-  ├── agent.cli         (CLI 模式)
-  ├── agent.core        (Agent 主循环)
-  │   ├── agent.prompt         (动态提示词)
-  │   ├── agent.providers      (LLM 提供商)
-  │   ├── agent.session        (会话管理)
-  │   ├── agent.tools          (工具系统)
-  │   ├── agent.memory         (记忆)
-  │   ├── agent.permissions    (权限)
-  │   ├── agent.workflow       (工作流)
-  │   └── agent.debug_stream   (调试日志)
-  ├── agent.web_gui.server (Web GUI)
-  └── harness.runner          (IPC 模式)
+  ├── agent.cli            (CLI mode)
+  ├── agent.core           (Agent main loop)
+  │   ├── agent.prompt            (Dynamic prompt engine)
+  │   ├── agent.providers         (LLM providers)
+  │   ├── agent.session           (Session management)
+  │   ├── agent.tools             (Tool system)
+  │   ├── agent.memory            (Short-term + Semantic memory)
+  │   ├── agent.permissions       (Permission control)
+  │   ├── agent.workflow          (Workflow engine)
+  │   └── agent.debug_stream      (Debug logging)
+  ├── agent.web_gui.server  (Web GUI)
+  └── harness.runner        (IPC harness mode)
 ```
 
-## 核心循环流程
+## Core Loop Flow
 
 ```
 run(user_message)
@@ -40,39 +40,52 @@ run(user_message)
        ├─ response = provider.chat_with_retry(
        │      system_prompt, messages, tools)
        │
-       ├─ if response.stop_reason == "error":
-       │     break
-       │
        ├─ if response.tool_calls:
        │    │
-       │    ├─ for tc in response.tool_calls:
-       │    │    ├─ check_permission(tc.name)
-       │    │    ├─ on_tool_start(name, args)   # → UI
-       │    │    └─ collect tasks
+       │    ├─ separate concurrency_safe vs serial tools
+       │    ├─ parallel(concurrency_safe)  # ThreadPoolExecutor
+       │    ├─ serial(remaining)
        │    │
-       │    ├─ execute tools (parallel safe, serial unsafe)
-       │    │    └─ for each: on_tool_output(line)  # → UI 逐行
-       │    │
-       │    ├─ session.messages.append({
-       │    │      role="assistant",
-       │    │      tool_calls=[all results]
-       │    │  })
-       │    ├─ for each result:
-       │    │    session.messages.append({
-       │    │        role="tool",
-       │    │        tool_call_id=id
-       │    │    })
-       │    │
-       │    └─ continue  # 下一轮
+       │    ├─ auto-store tool memories
+       │    ├─ session.append(assistant + tool messages)
+       │    └─ continue
        │
-       └─ else:  # 无工具调用
-            return response.content
+       └─ else:
+            ├─ auto-store response memory
+            └─ return response.content
 ```
 
-## Web GUI 事件流
+## Memory System Architecture
 
 ```
-浏览器                     FastAPI                    Agent
+┌─────────────────────────────────────────────────────┐
+│                  Memory System                       │
+├─────────────────────┬───────────────────────────────┤
+│   ShortTermMemory   │      SemanticMemory           │
+│   (session scope)   │    (ChromaDB vector store)    │
+├─────────────────────┼───────────────────────────────┤
+│ • facts (key/value) │ • store(content, metadata)    │
+│ • notes (timeline)  │ • search(query, top_k)        │
+│ • tags              │ • get_recent(limit)           │
+│ • task_stack        │ • delete / clear / count      │
+│ • clear()           │ • auto-persisted to disk      │
+└─────────────────────┴───────────────────────────────┘
+         │                       │
+         └──────────┬────────────┘
+                    ▼
+         PromptContext.memories
+                    │
+                    ▼
+         _build_memory_block()
+                    │
+                    ▼
+         System prompt (dynamic injection)
+```
+
+## Web GUI Event Flow
+
+```
+Browser                    FastAPI                    Agent
   │                         │                         │
   │──GET /api/stream───────▶│                         │
   │                         │ SSE connection           │
@@ -83,5 +96,44 @@ run(user_message)
   │◀───event: session_end──│◀───run() complete────────│
   │                         │                         │
   │──POST /api/send────────▶│                         │
-  │──{"text": "消息"}───────│──thread: agent.run()───▶│
+  │──{"text": "message"}────│──thread: agent.run()───▶│
 ```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Index HTML |
+| GET | `/api/stream` | SSE event stream |
+| POST | `/api/send` | Send message |
+| POST | `/api/stop` | Stop agent |
+| POST | `/api/clear` | Clear session |
+| GET | `/api/config` | Get config |
+| POST | `/api/config` | Set config |
+| GET | `/api/context` | Get context |
+| GET | `/api/health` | Health check |
+| GET | `/api/debug` | Export debug JSON |
+| GET | `/api/debug/markdown` | Export debug MD |
+| GET | `/api/memory` | Memory stats + recent |
+| POST | `/api/memory/search` | Semantic memory search |
+| POST | `/api/memory/store` | Store memory |
+| POST | `/api/memory/clear` | Clear all memories |
+| GET | `/api/plugins` | List plugins + tools |
+| POST | `/api/plugins/discover` | Rescan plugins |
+
+## Tool Execution Model
+
+1. LLM returns `tool_calls` with N tools
+2. Each tool is classified: `is_concurrency_safe` or serial
+3. Concurrency-safe tools (read, glob, grep, web_search, memory_search, memory_stats) → **ThreadPoolExecutor (max 8 workers)**
+4. Serial tools (write, edit, bash, subagent, artifact) → **sequential execution**
+5. Results are assembled in original order and appended to session
+6. Memory is auto-stored after tool round
+
+## Extension Points
+
+- **Add a tool**: Create a function with `@tool()` decorator, import in `agent/tools/__init__.py`
+- **Add a provider**: Subclass `LLMProvider` in `agent/providers/base.py`, add to `create_provider()`
+- **Add a prompt section**: Call `prompt_builder.register_section()` with a builder function
+- **Add a plugin**: Create `plugin.py` + `manifest.json` in a plugin directory
+- **Add an API endpoint**: Add route handlers in `agent/web_gui/server.py`

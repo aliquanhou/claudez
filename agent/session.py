@@ -245,8 +245,8 @@ class Session:
         return sessions
 
     def _auto_save(self):
-        """自动保存（每 5 条消息）。"""
-        if self._session_dir and len(self.messages) % 5 == 0:
+        """自动保存（每次变动保存，延迟去重防抖）。"""
+        if self._session_dir:
             self.save()
 
 

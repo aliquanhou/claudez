@@ -1,84 +1,57 @@
 <div align="center">
   <h1>ClaudeZ</h1>
-  <p><strong>Model (DeepSeek) + Harness (Go Native) = Agent</strong></p>
-  <p>专业为 DeepSeek 打造的自主 AI 智能体框架</p>
+  <p><strong>Model + Harness = Agent</strong></p>
+  <p>An open-source autonomous AI agent framework, purpose-built for <strong>DeepSeek</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.1-7C3AED" alt="Version 2.1">
+    <img src="https://img.shields.io/badge/version-2.2-7C3AED" alt="Version 2.2">
     <img src="https://img.shields.io/badge/DeepSeek-Optimized-4D6BFE" alt="DeepSeek Optimized">
     <img src="https://img.shields.io/badge/Go_Harness-Native-00ADD8" alt="Go Harness">
     <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB" alt="Python 3.11+">
     <img src="https://img.shields.io/badge/license-MIT-10B981" alt="MIT License">
+    <img src="https://img.shields.io/github/stars/aliquanhou/claudez?style=social" alt="GitHub Stars">
+  </p>
+  <p>
+    <a href="#-quick-start">Quick Start</a> •
+    <a href="#-features">Features</a> •
+    <a href="#-architecture">Architecture</a> •
+    <a href="#-configuration">Configuration</a> •
+    <a href="#-roadmap">Roadmap</a>
   </p>
 </div>
 
 ---
 
-## 🎯 设计哲学
+## 🎯 Philosophy
 
-> **每次 LLM 调用前，系统提示词都是"状态快照"**
+> **Every LLM call gets a fresh system prompt — a snapshot of current state.**
 
-ClaudeZ 的核心理念是将**大语言模型**与**原生壳层**深度结合，创造自主 AI 智能体：
+Traditional agents bake a static system prompt at startup. ClaudeZ's core innovation is **Dynamic Prompt Building**: before every LLM call, the system prompt is reconstructed from live context — available tools, workflow mode, semantic memories, session state, error rates, and active constraints.
 
-```
-      DeepSeek                         Go Harness
-     ┌────────────┐                  ┌─────────────────┐
-     │ 动态提示词   │    IPC/JSON-RPC  │   进程管理       │
-     │ 引擎        │◄──────────────►│   TUI 渲染       │
-     │ 工具系统     │     stdin/     │   自动更新       │
-     │ 记忆系统     │     stdout     │   看门狗         │
-     │ Plugin 生态  │                  │   平台分发       │
-     └──────┬─────┘                  └────────┬────────┘
-            │                                 │
-            └───────── Model + Harness ────────┘
-                           │
-                           ▼
-                    ┌──────────────┐
-                    │   自主 Agent   │
-                    │ workflow     │
-                    │ tool_exec    │
-                    │ memory       │
-                    └──────────────┘
-```
-
-**传统 Agent 的系统提示词是"一次性配置"——启动时写好就不再变化。**
-**ClaudeZ 的核心创新是：每次调用 LLM 前，根据当前上下文动态构建完整的系统提示词。**
-
-这意味着：
-- 🛠️ **工具列表实时注入** — 新增工具立即可用
-- 🔄 **工作流模式可切换** — chat / research / coding / debug / agent
-- 🧠 **自适应调整** — 根据错误率、轮次、重复调用动态调整行为约束
-- 💾 **记忆注入** — 语义记忆 + 短期记忆 + 项目上下文
-- 🔒 **约束条件动态生成** — 权限、超时、语言、禁止操作
+This means:
+- 🛠 **Tools are hot-pluggable** — register a new tool, and it's immediately available to the LLM
+- 🔄 **Workflow modes are switchable** — chat / research / coding / debug / agent, each with its own prompt structure
+- 🧠 **Memory is injected dynamically** — semantic search + short-term facts + project context, right into the system prompt
+- 🔒 **Constraints adapt** — permission mode, timeouts, language, forbidden operations
 
 ---
 
-## ✨ 核心特性
+## ✨ Features
 
-### 为 DeepSeek 而生
+### Purpose-Built for DeepSeek
 
-ClaudeZ **默认配置即针对 DeepSeek 深度优化**：
+| Feature | Description |
+|---------|-------------|
+| Native DeepSeek | Default provider is `deepseek` with `deepseek-chat` model |
+| Thinking Control | Toggle DeepSeek reasoning mode on/off (`disable_thinking`) |
+| Smart Retry | Exponential backoff with jitter, optimized for DeepSeek rate limits |
+| Message Repair | Triple-layer auto-fix for message sequences (tool call → tool result pairing) |
+| Token Management | 8K max_tokens, 64K context window support |
 
-| 特性 | 说明 |
-|------|------|
-| 默认 Provider | `deepseek` / `deepseek-chat` |
-| Thinking 控制 | 可开关 DeepSeek reasoning 模式 |
-| Token 管理 | 8192 max_tokens + 64K 上下文窗口 |
-| 消息序列修复 | 三层自动修复确保 API 兼容性 |
-| 指数退避重试 | 专为 DeepSeek 限流策略优化 |
-
-### Model + Harness = Agent
-
-| 层 | 技术 | 职责 |
-|----|------|------|
-| **Model** | DeepSeek API (Python) | 动态提示词引擎、工具系统、记忆、插件 |
-| **Harness** | Go Native (Bubble Tea) | 进程管理、TUI 渲染、自动更新、IPC |
-| **Agent** | Python Core | Agent 主循环、工作流、权限控制 |
-
-### 三大运行模式
+### Three Run Modes
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   ClaudeZ v2.1                           │
+│                    ClaudeZ v2.2                          │
 ├─────────────┬───────────────────┬───────────────────────┤
 │  CLI Mode   │   Web GUI Mode    │   Harness TUI Mode   │
 │             │                   │                       │
@@ -86,143 +59,96 @@ ClaudeZ **默认配置即针对 DeepSeek 深度优化**：
 │  main.py    │  FastAPI Backend  │  Bubble Tea           │
 │  "question" │  Real-time Stream │  Process Watchdog     │
 ├─────────────┴───────────────────┴───────────────────────┤
-│              Model: DeepSeek + 工具系统 + 记忆            │
+│              Core: DeepSeek + Tool System + Memory       │
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Key Capabilities
+
+| Capability | Details |
+|------------|---------|
+| **Dynamic Prompt Engine** | 8 configurable sections: role, tools, workflow, constraints, memory, project, adaptations, examples |
+| **Tool System** | Pydantic schema, runtime validation, `@tool` decorator, 17+ built-in tools |
+| **Parallel Execution** | Concurrency-safe tools (read/glob/grep/web) run in parallel via ThreadPoolExecutor |
+| **Semantic Memory** | ChromaDB vector store cross-session memory |
+| **10+ Built-in Tools** | read, write, edit, bash, glob, grep, web, web_search, process, monitor, subagent, artifact, workflow, webhook, memory_search, memory_store, memory_stats |
+| **Plugin System** | Discover, load, unload host tool plugins dynamically |
+| **Web GUI** | Glassmorphism dark theme, real-time SSE streaming, tool panel, event log, config page, memory browser |
+| **Multi-Provider** | DeepSeek (default), OpenAI, Anthropic Claude |
+| **Permission System** | Auto / Ask / Deny / Read-only modes with immutable audit log |
+| **Context Compression** | Auto-compress when context window reaches 85% |
+| **Workflow Engine** | Multi-step workflow creation, checkpoint save/resume |
+| **Webhook** | Remote trigger via REST API with API key authentication |
+| **Host Tool Detection** | Auto-detects 20+ development tools (node, python, git, docker...) |
+
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
 ```bash
-# 1. 安装依赖
-pip install anthropic openai chromadb psutil fastapi uvicorn sse_starlette
+# 1. Install dependencies
+pip install anthropic openai chromadb psutil fastapi uvicorn sse_starlette pydantic
 
-# 2. 配置 DeepSeek API Key
-# 编辑 config.json 或设置环境变量
-set CLAUDEZ_API_KEY=sk-your-key-here
+# 2. Set your API key
+#    Option A: Environment variable
+set CLAUDEZ_API_KEY=sk-your-key-here        # Windows
+export CLAUDEZ_API_KEY=sk-your-key-here      # Linux/macOS
 
-# 3. CLI 单次执行
-python main.py "用 Python 写一个斐波那契数列"
+#    Option B: config.json (see Configuration section)
+```
 
-# 4. 交互模式
+### Single Query (CLI)
+
+```bash
+python main.py "Write a Python script to calculate Fibonacci numbers"
+```
+
+### Interactive Mode
+
+```bash
 python main.py --interactive
+```
 
-# 5. Web GUI 模式（随机端口，自动开浏览器）
+### Web GUI Mode
+
+```bash
+# Random port (auto-opens browser)
 python main.py --web
+
+# Or pick a port
 python main.py --web --port 8080
+```
 
-# 6. 工作流模式
-python main.py -w coding "写一个 REST API"
-python main.py -w research "搜索最新的 AI 框架"
-python main.py -w debug "排查这个 bug"
+### Workflow Modes
 
-# 7. 原生 Harness 模式（需要 Go 编译）
-python main.py --harness-mode
+```bash
+python main.py -w coding "Build a REST API with FastAPI"
+python main.py -w research "Research the latest AI frameworks"
+python main.py -w debug "Debug this stack trace: ..."
+python main.py -w chat "What's the weather like today?"
 ```
 
 ---
 
-## 📦 技术栈全景
+## 🔧 Configuration
 
-| 层级 | 技术 | 版本 |
-|------|------|------|
-| **LLM Provider** | DeepSeek / OpenAI / Anthropic | v2.1 |
-| **动态提示词引擎** | Python (自研) | — |
-| **工具系统** | Pydantic Schema + @tool 装饰器 | — |
-| **向量记忆** | ChromaDB | latest |
-| **Web GUI** | FastAPI + SSE + Canvas | — |
-| **Go Harness** | Bubble Tea + Lipgloss | v1.1.0 |
-| **IPC 协议** | JSON-RPC 2.0 over stdin/stdout | — |
-| **进程管理** | Watchdog (自研) | — |
-| **自动更新** | GitHub Releases API | — |
-| **插件系统** | PluginManager + manifest.json | — |
-| **主机工具探测** | 20+ 开发工具自动挂载 | — |
-| **分发** | npm / pip 双渠道 | — |
+### Environment Variables (Recommended)
 
----
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAUDEZ_API_KEY` | LLM API key (preferred over config.json) | — |
+| `CLAUDEZ_MODEL` | Model name override | — |
+| `CLAUDEZ_PROVIDER` | Provider override | — |
+| `CLAUDEZ_SESSIONS_DIR` | Session persistence directory | `~/.claudez/sessions/` |
 
-## 📂 项目结构
-
-```
-ClaudeZ/
-├── main.py                    # ★ 入口（CLI / Web / Harness）
-├── config.json                # 配置文件（默认 DeepSeek）
-├── DEEPSEEK_TECH_STACK.md     # DeepSeek 技术栈文档
-├── UX_AUDIT.md                # 全球用户体验审计报告
-│
-├── agent/                     # ★ Agent 核心（Python）
-│   ├── core.py                # Agent 主循环（核心）
-│   ├── prompt.py              # ★ 动态提示词引擎
-│   ├── cli.py                 # CLI 界面
-│   ├── session.py             # 会话管理 + 持久化
-│   ├── types.py               # ContentBlock 类型系统
-│   ├── debug_stream.py        # 结构化调试日志
-│   ├── permissions.py         # 权限控制 + 审计日志
-│   ├── workflow.py            # 工作流引擎
-│   ├── webhook.py             # Webhook 远程触发
-│   ├── plugin_manager.py      # 插件管理系统
-│   │
-│   ├── providers/             # LLM 提供商抽象层
-│   │   └── base.py            # ★ DeepSeek / OpenAI / Anthropic
-│   │
-│   ├── tools/                 # ★ 工具系统（10+ 内置工具）
-│   │   ├── registry.py        # 工具注册表
-│   │   ├── schema.py          # Pydantic Schema 校验
-│   │   ├── builtin.py         # read/write/bash/edit/glob/grep...
-│   │   ├── subagent.py        # 子 Agent 工具
-│   │   ├── artifact.py        # 制品发布工具
-│   │   ├── workflow_tool.py   # 工作流管理工具
-│   │   └── webhook_tool.py    # Webhook 管理工具
-│   │
-│   ├── memory/                # 记忆系统
-│   │   ├── short_term.py      # 短期记忆（会话内事实）
-│   │   └── semantic.py        # 语义记忆（ChromaDB 向量存储）
-│   │
-│   ├── plugins/               # 插件系统
-│   │   └── host_tools/        # 主机工具链探测（20+ 工具）
-│   │
-│   └── web_gui/               # ★ Web GUI
-│       ├── server.py          # FastAPI + SSE + REST API
-│       └── static/
-│           ├── index.html     # 深色主题前端（粒子背景）
-│           └── app.js         # SSE 流式渲染 / 工具面板 / 调试
-│
-├── harness/                   # ★ Go 原生壳层
-│   ├── main.go                # 入口（TUI / 无头模式）
-│   ├── go.mod                 # Go 1.22 + Bubble Tea
-│   ├── runner.py              # Python 侧 IPC 桥接
-│   ├── ipc/protocol.py        # JSON-RPC 2.0 协议
-│   ├── tui/                   # Bubble Tea TUI 渲染
-│   │   ├── render.go          # 分屏聊天界面
-│   │   ├── spinner.go         # 加载动画
-│   │   └── theme.go           # 颜色主题
-│   ├── lifecycle/watchdog.go  # 进程看门狗（自动重启）
-│   └── updater/check.go       # 自动更新检查
-│
-├── core/tool_schema.py        # 向后兼容 SDK 层
-├── scripts/                   # 构建脚本
-│   ├── build.sh               # 跨平台构建
-│   └── build.bat
-├── tests/                     # 全面测试套件（9 项）
-└── @claudez/                  # npm 平台分发
-    ├── cli/                   # CLI 包装
-    ├── harness-win32-x64/     # Windows 原生二进制
-    ├── harness-darwin-arm64/  # macOS Apple Silicon
-    └── harness-linux-x64/     # Linux x64
-```
-
----
-
-## 🔧 配置文档
-
-默认配置已针对 DeepSeek 优化：
+### config.json
 
 ```json
 {
     "provider": "deepseek",
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-your-key-here",
     "max_tokens": 8192,
     "temperature": 0.0,
     "workflow_mode": "agent",
@@ -232,81 +158,192 @@ ClaudeZ/
 }
 ```
 
-> **安全提示**: 建议使用环境变量 `CLAUDEZ_API_KEY` 替代 `config.json` 明文存储 API Key。
+> **Security**: Use environment variables `CLAUDEZ_API_KEY` instead of storing keys in config.json. The `.gitignore` excludes `config.json` by default.
 
 ---
 
-## 🌐 全球用户体验评级
+## 🧠 Memory System
 
-| 维度 | CLI | Web GUI | TUI | 配置 | 工具 |
-|------|-----|---------|-----|------|------|
-| 功能性 | 8.0 | 8.5 | 7.5 | 8.0 | 9.0 |
-| 易用性 | 7.5 | 8.0 | 6.5 | 7.0 | 8.5 |
-| **加权总分** | ⭐⭐⭐⭐☆ 4/5 | | | | |
+ClaudeZ features a two-tier memory system:
 
-> 详细审计报告见 [UX_AUDIT.md](UX_AUDIT.md)
+| Tier | Technology | Scope | Persistence |
+|------|-----------|-------|-------------|
+| **Short-Term** | In-memory dict | Current session facts, notes, task stack | Session lifetime |
+| **Semantic** | ChromaDB vector store | Cross-session knowledge | Disk (persistent) |
 
----
-
-## 📚 文档索引
-
-| 文档 | 说明 |
-|------|------|
-| [DEEPSEEK_TECH_STACK.md](DEEPSEEK_TECH_STACK.md) | DeepSeek 技术栈深度解析 |
-| [UX_AUDIT.md](UX_AUDIT.md) | 全球用户体验审计报告 |
-| [API.md](API.md) | 完整 API 参考 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构指南 |
-| [TECHNICAL_WHITEPAPER.md](TECHNICAL_WHITEPAPER.md) | 技术白皮书（v2.1） |
+Memory is **automatically stored** after each tool-use round and each assistant response. You can also manually search, store, and browse memories via:
+- The **Memory tab** in Web GUI
+- LLM tool calls: `memory_search`, `memory_store`, `memory_stats`
 
 ---
 
-## 🧪 测试
+## 📂 Project Structure
+
+```
+ClaudeZ/
+├── main.py                      # Entry point (CLI / Web / Harness)
+├── config.json                  # Configuration file
+│
+├── agent/                       # Agent core (Python)
+│   ├── core.py                  # Agent main loop
+│   ├── prompt.py                # Dynamic prompt engine ★
+│   ├── cli.py                   # CLI interface
+│   ├── session.py               # Session management + persistence
+│   ├── types.py                 # ContentBlock type system
+│   ├── debug_stream.py          # Structured debug logging
+│   ├── permissions.py           # Permission control + audit log
+│   ├── workflow.py              # Workflow engine
+│   ├── webhook.py               # Remote webhook trigger
+│   ├── plugin_manager.py        # Plugin management
+│   │
+│   ├── providers/               # LLM provider abstraction
+│   │   └── base.py              # DeepSeek / OpenAI / Anthropic
+│   │
+│   ├── tools/                   # Tool system (17+ tools)
+│   │   ├── registry.py          # Tool registry (Pydantic)
+│   │   ├── schema.py            # Pydantic Schema validation
+│   │   ├── builtin.py           # read/write/bash/edit/glob/grep/web...
+│   │   ├── subagent.py          # Sub-agent tool
+│   │   ├── memory_tool.py       # Memory search/store/stats tools
+│   │   ├── artifact.py          # Artifact publishing
+│   │   ├── workflow_tool.py     # Workflow management
+│   │   └── webhook_tool.py      # Webhook management
+│   │
+│   ├── memory/                  # Memory system
+│   │   ├── short_term.py        # Short-term (session facts)
+│   │   └── semantic.py          # Semantic (ChromaDB)
+│   │
+│   ├── plugins/                 # Plugin system
+│   │   └── host_tools/          # Host tool chain detection (20+ tools)
+│   │
+│   └── web_gui/                 # Web GUI
+│       ├── server.py            # FastAPI + SSE + REST API
+│       └── static/
+│           ├── index.html       # Dark theme frontend
+│           └── app.js           # SSE rendering / tool panel / debug
+│
+├── harness/                     # Go native harness
+│   ├── main.go                  # Entry (TUI / headless)
+│   ├── go.mod                   # Go 1.22 + Bubble Tea
+│   ├── runner.py                # Python-side IPC bridge
+│   ├── ipc/protocol.py          # JSON-RPC 2.0 protocol
+│   ├── tui/                     # Bubble Tea TUI
+│   │   ├── render.go, spinner.go, theme.go
+│   ├── lifecycle/watchdog.go    # Process watchdog
+│   └── updater/check.go         # Auto-update
+│
+├── scripts/                     # Build scripts
+├── tests/                       # Test suite (9 tests)
+└── @claudez/                    # npm distribution
+```
+
+---
+
+## 🌐 Web GUI Dashboard
+
+The Web GUI provides a full-featured dashboard with:
+
+| Panel | Content |
+|-------|---------|
+| 🛠 **Tools** | All registered tools with live usage stats, host tool masking |
+| 🧩 **Plugins** | Plugin management, probe/reprobe, mask/unmask tools |
+| 🧠 **Memory** | Memory stats, semantic search, quick store, recent memories |
+| 📡 **Events** | Real-time event log with type filters |
+| 🐛 **Debug** | Export structured debug logs (JSON / Markdown) |
+| ⚙ **Config** | Provider, model, base URL, API key, workflow mode |
+
+---
+
+## 🔌 Tool System
+
+Tools are registered via the `@tool` decorator:
+
+```python
+from agent.tools.registry import tool
+
+@tool(category="file", timeout=30, is_readonly=True, is_concurrency_safe=True)
+def read(file_path: str, head: int = 0, tail: int = 0) -> str:
+    """Read file content."""
+    ...
+```
+
+| Attribute | Description |
+|-----------|-------------|
+| `category` | Tool category (file, shell, web, system, memory...) |
+| `timeout` | Execution timeout in seconds |
+| `is_readonly` | Marks as read-only for permission system |
+| `is_concurrency_safe` | Enables parallel execution with other safe tools |
+| `require_confirmation` | Requires user confirmation before execution |
+
+---
+
+## 🧪 Testing
 
 ```bash
 python tests/run_all.py
 ```
 
-包含 9 项测试，覆盖导入、配置、工具注册表、提示词构建、会话管理、Provider 层、IPC 协议、工作流引擎、记忆系统。
+Runs 9 tests covering imports, configuration, tool registry, prompt building, session management, provider layer, IPC protocol, workflow engine, and memory system.
 
 ---
 
-## 🏗️ 构建原生 Harness
+## 🌍 Comparison
 
-```bash
-# Windows
-scripts\build.bat
-
-# Linux / macOS
-./scripts/build.sh
-```
-
-构建产物：`@claudez/harness-{platform}/bin/claudez`
-
----
-
-## 🤝 对比优势
-
-| 特性 | ClaudeZ v2.1 | Claude Code | Cursor | Windsurf |
-|------|-------------|-------------|--------|----------|
-| **动态提示词** | ✅ **独家** | ❌ | ❌ | ❌ |
-| **DeepSeek 原生** | ✅ **默认** | ❌ | ⚠️ 第三方 | ⚠️ 第三方 |
-| **Go 原生壳层** | ✅ **独有** | ❌ Node.js | ❌ Electron | ❌ Electron |
-| **主机工具探测** | ✅ **独有** | ❌ | ❌ | ❌ |
-| **插件系统** | ✅ | ❌ | ✅ | ✅ |
-| **多 Provider** | ✅ 3家 | ❌ 1家 | ✅ 多家 | ✅ 多家 |
+| Feature | ClaudeZ v2.2 | Claude Code | Cursor | Windsurf |
+|---------|-------------|-------------|--------|----------|
+| **Dynamic Prompts** | ✅ **Proprietary** | ❌ | ❌ | ❌ |
+| **DeepSeek Native** | ✅ **Default** | ❌ | ⚠️ 3rd party | ⚠️ 3rd party |
+| **Go Native Harness** | ✅ **Unique** | ❌ Node.js | ❌ Electron | ❌ Electron |
+| **Host Tool Detection** | ✅ **Unique** | ❌ | ❌ | ❌ |
+| **Semantic Memory** | ✅ ChromaDB | ❌ | ❌ | ❌ |
 | **Web GUI** | ✅ | ❌ | ❌ | ❌ |
-| **语义记忆** | ✅ ChromaDB | ❌ | ❌ | ❌ |
-| **开源** | ✅ MIT | ❌ | ❌ | ❌ |
+| **Plugin System** | ✅ | ❌ | ✅ | ✅ |
+| **Multi-Provider** | ✅ 3 providers | ❌ 1 provider | ✅ | ✅ |
+| **Open Source** | ✅ MIT | ❌ | ❌ | ❌ |
+| **Parallel Tool Exec** | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
-## 📄 许可
+## 📚 Documentation
 
-MIT License — 自由使用、修改、分发。
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture and data flow |
+| [API.md](API.md) | Complete API reference |
+| [DEEPSEEK_TECH_STACK.md](DEEPSEEK_TECH_STACK.md) | DeepSeek integration deep dive |
+| [TECHNICAL_WHITEPAPER.md](TECHNICAL_WHITEPAPER.md) | Technical whitepaper |
+| [UX_AUDIT.md](UX_AUDIT.md) | UX audit report |
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Here's how you can help:
+
+- **🐛 Report bugs** — Open an issue with reproduction steps
+- **💡 Suggest features** — Start a discussion
+- **🔧 Submit PRs** — Fix bugs, add tools, improve docs
+- **🌐 Translate** — Help localize documentation
+
+Before submitting a PR:
+1. Run `python tests/run_all.py` to verify nothing is broken
+2. Follow the existing code style (Pydantic schemas, type hints, docstrings)
+3. Add tests for new functionality
+
+---
+
+## 📄 License
+
+MIT License — free to use, modify, and distribute.
 
 ---
 
 <div align="center">
   <p><strong>Model (DeepSeek) + Harness (Go Native) = Agent</strong></p>
-  <p>ClaudeZ v2.1 | 2026-07-18</p>
+  <p>ClaudeZ v2.2 | 2026-07-19</p>
+  <p>
+    <a href="https://github.com/aliquanhou/claudez">GitHub</a> •
+    <a href="https://github.com/aliquanhou/claudez/issues">Issues</a> •
+    <a href="https://github.com/aliquanhou/claudez/discussions">Discussions</a>
+  </p>
 </div>

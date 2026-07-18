@@ -112,8 +112,9 @@ def _run_subagent_async(task: SubAgentTask):
 
         _manager.update_task(task.id, status="running")
 
-        # 继承父 Agent 的配置
+        # 继承父 Agent 的配置（优先环境变量）
         import json as _json, os as _os
+        _env_key = _os.environ.get("CLAUDEZ_API_KEY", "")
         _cfg_paths = ["config.json"]
         _cfg = {}
         for _p in _cfg_paths:
@@ -125,7 +126,7 @@ def _run_subagent_async(task: SubAgentTask):
         config = {
             "model": task.model or _cfg.get("model", "deepseek-chat"),
             "provider": _cfg.get("provider", "deepseek"),
-            "api_key": _cfg.get("api_key", ""),
+            "api_key": _env_key or _cfg.get("api_key", ""),
             "base_url": _cfg.get("base_url", "https://api.deepseek.com/v1"),
             "workflow_mode": task.agent_type,
             "max_tool_calls_per_turn": 15,
@@ -220,13 +221,14 @@ def subagent(prompt: str, agent_type: str = "agent",
         from agent.core import Agent
         from agent.session import create_isolated_session
 
-        # 继承父 Agent 的关键配置（subagent 函数定义在模块顶层，无法访问父 Agent 实例）
-        # 通过全局 config 获取 api_key/base_url
+        # 继承父 Agent 的关键配置
+        # 优先从环境变量获取 API Key，其次从 config.json
+        import os as _os
+        _env_key = _os.environ.get("CLAUDEZ_API_KEY", "")
         import json as _json
         _cfg_paths = ["config.json"]
         _cfg = {}
         for _p in _cfg_paths:
-            import os as _os
             if _os.path.exists(_p):
                 with open(_p, "r", encoding="utf-8") as _f:
                     _cfg = _json.load(_f)
@@ -235,7 +237,7 @@ def subagent(prompt: str, agent_type: str = "agent",
         config = {
             "model": model or _cfg.get("model", "deepseek-chat"),
             "provider": _cfg.get("provider", "deepseek"),
-            "api_key": _cfg.get("api_key", ""),
+            "api_key": _env_key or _cfg.get("api_key", ""),
             "base_url": _cfg.get("base_url", "https://api.deepseek.com/v1"),
             "workflow_mode": agent_type,
             "max_tool_calls_per_turn": 15,

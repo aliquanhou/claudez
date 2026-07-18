@@ -1,6 +1,6 @@
-# ClaudeZ API 文档
+# ClaudeZ API Reference (v2.2)
 
-## CLI 接口
+## CLI Interface
 
 ```bash
 python main.py [options] [message...]

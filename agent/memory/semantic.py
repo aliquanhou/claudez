@@ -134,6 +134,29 @@ class SemanticMemory:
         except Exception:
             return 0
 
+    def get_recent(self, limit: int = 10) -> list[dict]:
+        """获取最近的记忆列表。"""
+        if not self._ensure():
+            return []
+        try:
+            all_data = self._collection.get()
+            ids = all_data.get("ids", [])
+            docs = all_data.get("documents", [])
+            metas = all_data.get("metadatas", [])
+            recent = []
+            for i in range(min(limit, len(ids))):
+                idx = len(ids) - 1 - i
+                if idx < 0:
+                    break
+                recent.append({
+                    "id": ids[idx],
+                    "content": docs[idx][:300] if idx < len(docs) else "",
+                    "metadata": metas[idx] if idx < len(metas) else {},
+                })
+            return recent
+        except Exception:
+            return []
+
     def clear(self):
         """清空所有记忆。"""
         if not self._ensure():

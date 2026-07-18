@@ -63,7 +63,7 @@ class WebhookManager:
 
     def verify_key(self, key: str) -> bool:
         if not self._api_key:
-            return True  # 无 API Key 时不验证
+            return False  # 默认拒绝：必须先设置 API Key
         return key == self._api_key
 
     def create_task(self, prompt: str, source_ip: str = "",
@@ -107,6 +107,21 @@ def get_webhook_manager() -> WebhookManager:
     return _manager
 
 
+# ── 配置读取 ──
+
+def _load_config_value(key: str, default=""):
+    """从 config.json 读取配置值。"""
+    try:
+        import json
+        for path in ["config.json"]:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f).get(key, default)
+    except Exception:
+        pass
+    return default
+
+
 # ── 后台执行 ──
 
 def _execute_task_async(task: WebhookTask):
@@ -117,9 +132,13 @@ def _execute_task_async(task: WebhookTask):
         _manager.update_task(task.id, status="running")
 
         agent = Agent({
-            "model": os.environ.get("CLAUDEZ_MODEL", "claude-sonnet-4-20250514"),
+            "model": os.environ.get("CLAUDEZ_MODEL", "") or _load_config_value("model", "deepseek-chat"),
+            "provider": os.environ.get("CLAUDEZ_PROVIDER", "") or _load_config_value("provider", "deepseek"),
+            "api_key": os.environ.get("CLAUDEZ_API_KEY", "") or _load_config_value("api_key", ""),
+            "base_url": _load_config_value("base_url", "https://api.deepseek.com/v1"),
             "workflow_mode": "agent",
             "max_tool_calls_per_turn": 25,
+            "disable_thinking": _load_config_value("disable_thinking", True),
         })
 
         result = agent.run(task.prompt)

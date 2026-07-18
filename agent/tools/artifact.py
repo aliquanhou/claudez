@@ -16,7 +16,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
-import uuid
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path

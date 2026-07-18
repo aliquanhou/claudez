@@ -12,3 +12,4 @@ from . import subagent
 from . import workflow_tool
 from . import artifact
 from . import webhook_tool
+from . import memory_tool  # 记忆系统工具

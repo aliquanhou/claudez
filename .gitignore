@@ -48,3 +48,6 @@ gradle-8.1/
 
 # Session data
 sessions/
+
+# Runtime state
+.tool_mask.json

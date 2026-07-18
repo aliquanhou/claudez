@@ -1,8 +1,10 @@
-# ClaudeZ 技术白皮书 (Technical Whitepaper)
+# ClaudeZ Technical Whitepaper
 
-> 版本 2.1 | 2026-07-18
+> Version 2.2 | 2026-07-19
 > 
-> 专业为 DeepSeek 打造的 Model + Harness = Agent 框架
+> An open-source autonomous AI agent framework, purpose-built for DeepSeek
+> 
+> **Model + Harness = Agent** — Every LLM call gets a fresh, dynamic system prompt.
 
 ---
 
