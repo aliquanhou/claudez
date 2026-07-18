@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+agent/.claudez/
+.DS_Store
+*.db
