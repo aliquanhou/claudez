@@ -278,18 +278,18 @@ class WebServer:
                     self.agent.config["base_url"] = body["base_url"]
                     needs_recreate = True
                 if "api_key" in body and body["api_key"]:
-                    # 更新内存中的 key（不存到 config.json）
                     self.agent.config["api_key"] = body["api_key"]
-                    # 同时设置环境变量方便子进程继承
                     os.environ["CLAUDEZ_API_KEY"] = body["api_key"]
                     needs_recreate = True
                 if "workflow_mode" in body:
                     self.agent.set_workflow_mode(body["workflow_mode"])
-                # 有影响 provider 的变更时重新创建 provider 实例
                 if needs_recreate:
                     from agent.providers import create_provider
                     self.agent.provider = create_provider(self.agent.config)
                     self.agent._setup_provider_callbacks()
+                # ★ 持久化到磁盘：Web UI 保存的配置写入 config.json
+                #   这样重启后 / subagent / webhook 等所有路径都能读取
+                _persist_config(self.agent.config)
             return {"status": "ok"}
 
         @app.get("/api/config")
@@ -675,6 +675,24 @@ class WebServer:
                     q.put_nowait({"type": event_type, "payload": payload})
                 except q_module.Full:
                     pass
+
+
+def _persist_config(config: dict):
+    """持久化当前配置到 config.json，确保重启 / subagent / webhook 都能读到。"""
+    try:
+        cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.json")
+        # 只持久化关键配置字段，不存运行时状态
+        persist_keys = ["provider", "model", "base_url", "api_key", "max_tokens", "temperature",
+                        "workflow_mode", "disable_thinking", "enable_memory", "max_consecutive_errors"]
+        out = {}
+        for k in persist_keys:
+            if k in config:
+                out[k] = config[k]
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=4, ensure_ascii=False)
+        _log.info("config_persisted -> %s (%d keys)", cfg_path, len(out))
+    except Exception as e:
+        _log.warning("config_persist_failed: %s", e)
 
 
 def _find_free_port() -> int:
