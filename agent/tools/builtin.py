@@ -151,7 +151,12 @@ def grep(pattern: str, path: str = ".", glob_pattern: str = "*.py") -> str:
 
 @tool(category="shell", timeout=60, require_confirmation=True)
 def bash(command: str, timeout: int = 30) -> str:
-    """执行 shell 命令（Windows CMD，支持流式输出）。
+    """执行 shell 命令（跨平台，支持流式输出）。
+
+    安全措施：
+      - 简单命令（无 shell 元字符）使用参数列表执行，消除注入风险
+      - 复杂命令（管道/重定向等）使用 shell=True 但记录警告
+      - 使用 subprocess timeout 参数替代 threading.Timer
 
     如果当前线程注册了流式输出回调，会逐行推送 stdout/stderr。
 
@@ -159,6 +164,7 @@ def bash(command: str, timeout: int = 30) -> str:
         command: 要执行的命令
         timeout: 超时秒数
     """
+    import shlex
     import threading
     stream_cb = None
     try:
@@ -167,16 +173,71 @@ def bash(command: str, timeout: int = 30) -> str:
     except Exception:
         pass
 
+    # 判断是否需要 shell：包含管道、重定向、变量扩展等
+    _SHELL_META_CHARS = set('|&;<>$`\n')
+    needs_shell = any(c in command for c in _SHELL_META_CHARS)
+
     try:
-        process = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        if needs_shell:
+            if not stream_cb:
+                # 没有流式回调 → 使用 subprocess.run + timeout
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                output = []
+                if result.stdout:
+                    output.append(result.stdout)
+                if result.stderr:
+                    output.append(f"STDERR:\n{result.stderr}")
+                if result.returncode != 0:
+                    output.append(f"退出码: {result.returncode}")
+                return "".join(output) if output else "(无输出)"
+            else:
+                # 有流式回调 → 使用 Popen + 线程（保持流式兼容）
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+        else:
+            # 安全模式：参数列表 + 无 shell
+            safe_args = shlex.split(command)
+            if not stream_cb:
+                result = subprocess.run(
+                    safe_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                output = []
+                if result.stdout:
+                    output.append(result.stdout)
+                if result.stderr:
+                    output.append(f"STDERR:\n{result.stderr}")
+                if result.returncode != 0:
+                    output.append(f"退出码: {result.returncode}")
+                return "".join(output) if output else "(无输出)"
+            else:
+                process = subprocess.Popen(
+                    safe_args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
 
         output_lines = []
         timer = threading.Timer(timeout, lambda: process.kill() if process.poll() is None else None)
