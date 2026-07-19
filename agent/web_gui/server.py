@@ -291,27 +291,133 @@ class WebServer:
 
         @app.post("/api/config")
         async def api_set_config(body: dict):
-            if self.agent:
-                if "model" in body:
-                    self.agent.config["model"] = body["model"]
-                if "provider" in body:
-                    self.agent.config["provider"] = body["provider"]
-                    from agent.providers import create_provider
-                    self.agent.provider = create_provider(self.agent.config)
-                    self.agent._setup_provider_callbacks()
-                if "workflow_mode" in body:
-                    self.agent.set_workflow_mode(body["workflow_mode"])
-            return {"status": "ok"}
+            """更新配置（支持完整字段集）。"""
+            if not self.agent:
+                return {"status": "error", "message": "Agent not initialized"}
+
+            changes = []
+            errors = []
+
+            # ── Provider + Model ──
+            if "provider" in body:
+                val = str(body["provider"]).lower()
+                if val in ("deepseek", "openai", "anthropic"):
+                    self.agent.config["provider"] = val
+                    try:
+                        from agent.providers import create_provider
+                        self.agent.provider = create_provider(self.agent.config)
+                        self.agent._setup_provider_callbacks()
+                        changes.append(f"provider={val}")
+                    except Exception as e:
+                        errors.append(f"provider: {e}")
+                else:
+                    errors.append(f"provider: 不支持 {val}")
+
+            if "model" in body:
+                val = str(body["model"]).strip()
+                if val:
+                    self.agent.config["model"] = val
+                    changes.append(f"model={val}")
+                else:
+                    errors.append("model: 不能为空")
+
+            # ── 运行时参数 ──
+            if "temperature" in body:
+                try:
+                    t = float(body["temperature"])
+                    self.agent.config["temperature"] = max(0.0, min(2.0, t))
+                    changes.append(f"temperature={self.agent.config['temperature']}")
+                except (ValueError, TypeError):
+                    errors.append("temperature: 需为浮点数")
+
+            if "max_tokens" in body:
+                try:
+                    t = int(body["max_tokens"])
+                    self.agent.config["max_tokens"] = max(256, min(65536, t))
+                    changes.append(f"max_tokens={self.agent.config['max_tokens']}")
+                except (ValueError, TypeError):
+                    errors.append("max_tokens: 需为整数")
+
+            if "timeout" in body:
+                try:
+                    t = int(body["timeout"])
+                    self.agent.config["timeout"] = max(30, min(86400, t))
+                    changes.append(f"timeout={self.agent.config['timeout']}")
+                except (ValueError, TypeError):
+                    errors.append("timeout: 需为整数")
+
+            # ── 工作流 ──
+            if "workflow_mode" in body:
+                val = str(body["workflow_mode"]).lower()
+                if val in ("chat", "research", "coding", "debug", "agent"):
+                    self.agent.set_workflow_mode(val)
+                    changes.append(f"workflow_mode={val}")
+                else:
+                    errors.append(f"workflow_mode: 不支持 {val}")
+
+            # ── 开关 ──
+            if "disable_thinking" in body:
+                self.agent.config["disable_thinking"] = bool(body["disable_thinking"])
+                changes.append(f"disable_thinking={self.agent.config['disable_thinking']}")
+
+            if "enable_memory" in body:
+                val = bool(body["enable_memory"])
+                self.agent.config["enable_memory"] = val
+                if val:
+                    from agent.memory import get_semantic_memory
+                    self.agent.semantic_memory = get_semantic_memory()
+                else:
+                    self.agent.semantic_memory = None
+                changes.append(f"enable_memory={val}")
+
+            # ── 权限 ──
+            if "permission_mode" in body:
+                val = str(body["permission_mode"]).lower()
+                if val in ("auto", "ask", "deny", "readonly"):
+                    self.agent.config["permission_mode"] = val
+                    from agent.permissions import get_permission_manager
+                    get_permission_manager().set_mode(val)
+                    changes.append(f"permission_mode={val}")
+                else:
+                    errors.append(f"permission_mode: 不支持 {val}")
+
+            # ── API Key（仅存储，不返回） ──
+            if "api_key" in body and str(body["api_key"]).strip():
+                val = str(body["api_key"]).strip()
+                if val.startswith("sk-") or val.startswith("fk-") or len(val) > 20:
+                    self.agent.config["api_key"] = val
+                    os.environ["CLAUDEZ_API_KEY"] = val
+                    changes.append("api_key=***")
+                else:
+                    errors.append("api_key: 格式无效")
+
+            _log.info("config_update: %s (errors: %s)", changes, errors)
+            return {
+                "status": "ok" if not errors else "partial",
+                "changes": changes,
+                "errors": errors,
+            }
 
         @app.get("/api/config")
         async def api_get_config():
+            """获取完整配置（不返回 api_key 明文）。"""
             if not self.agent:
-                return {"provider": "", "model": "", "workflow_mode": ""}
+                return {"status": "error", "message": "Agent not initialized"}
+            cfg = self.agent.config
             return {
-                "provider": self.agent.config.get("provider", ""),
-                "model": self.agent.config.get("model", ""),
-                "workflow_mode": self.agent.config.get("workflow_mode", "agent"),
-                "tool_count": 0,
+                "provider": cfg.get("provider", ""),
+                "model": cfg.get("model", ""),
+                "temperature": cfg.get("temperature", 0.0),
+                "max_tokens": cfg.get("max_tokens", 8192),
+                "timeout": cfg.get("timeout", 3600),
+                "workflow_mode": cfg.get("workflow_mode", "agent"),
+                "disable_thinking": cfg.get("disable_thinking", True),
+                "enable_memory": cfg.get("enable_memory", True),
+                "permission_mode": cfg.get("permission_mode", "auto"),
+                "has_api_key": bool(cfg.get("api_key")),
+                "tool_count": len(self.agent.stats or {}),
+                "max_consecutive_errors": cfg.get("max_consecutive_errors", 5),
+                "context_compress_at": cfg.get("context_compress_at", 0.85),
             }
 
         @app.get("/api/context")
