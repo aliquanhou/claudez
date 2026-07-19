@@ -9,10 +9,10 @@
   - 自适应反馈
   - 磁盘持久化（JSON 序列化）
 """
-
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+_log = logging.getLogger("claudez.session")
 
 
 # ── 会话目录 ──
@@ -263,8 +266,8 @@ def get_session() -> Session:
         # 默认启用持久化
         try:
             _current_session.enable_persistence()
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("session_persistence_init_failed: %s", e)
     return _current_session
 
 
@@ -274,8 +277,8 @@ def reset_session():
     _current_session = Session()
     try:
         _current_session.enable_persistence()
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("session_persistence_reset_failed: %s", e)
 
 
 def create_isolated_session() -> Session:
