@@ -253,15 +253,57 @@ class Agent:
                     finally:
                         set_stream_callback(None)
 
+                # ── 并发工具执行 ──
+                #   is_concurrency_safe=True 的工具并行执行
+                #   非并发安全工具串行执行（bash/write/edit 等需隔离操作）
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from .tools import get_registry
+
+                def _is_safe(name: str) -> bool:
+                    tool = get_registry().get(name)
+                    return tool.is_concurrency_safe if tool else False
+
                 results: list[tuple[str, dict, str, str]] = []
+                serial_tasks = []
+                parallel_tasks = []
+
                 for n, a, cid, pre in tool_tasks:
                     if pre is not None:
                         results.append((n, a, cid, pre))
-                        continue
+                    elif _is_safe(n):
+                        parallel_tasks.append((n, a, cid))
+                    else:
+                        serial_tasks.append((n, a, cid))
+
+                # 并行执行并发安全工具
+                if parallel_tasks:
+                    with ThreadPoolExecutor(max_workers=min(8, len(parallel_tasks))) as pool:
+                        fut_map = {}
+                        for n, a, cid in parallel_tasks:
+                            fut = pool.submit(_exec, n, a, cid)
+                            fut_map[fut] = (n, a, cid)
+                        for fut in as_completed(fut_map):
+                            n, a, cid = fut_map[fut]
+                            _t0 = time.time()
+                            try:
+                                r = fut.result()
+                            except Exception as e:
+                                r = f"[错误] {e}"
+                            self.debug.log_tool_call(n, a, r, (time.time()-_t0)*1000, not r.startswith("[错误]"))
+                            results.append((n, a, cid, r))
+
+                # 串行执行非并发安全工具
+                for n, a, cid in serial_tasks:
                     _t0 = time.time()
                     r = _exec(n, a, cid)
                     self.debug.log_tool_call(n, a, r, (time.time()-_t0)*1000, not r.startswith("[错误]"))
                     results.append((n, a, cid, r))
+
+                # 按原始顺序排序（保证 session 消息序列正确）
+                order = {(n, a, cid): i for i, (n, a, cid, _) in enumerate(
+                    [(x[0], x[1], x[2]) for x in tool_tasks]
+                )}
+                results.sort(key=lambda x: order.get((x[0], x[1], x[2]), 999))
 
                 # ★ 写入 session：必须成对出现 assistant(tc=[...]) + tool(...) + tool(...)
                 #   生成的消息序列由 LLM 返回的同一组 tool_calls 保证完整性
