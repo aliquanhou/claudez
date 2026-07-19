@@ -152,6 +152,8 @@ class LLMProvider(ABC):
         self.disable_thinking = config.get("disable_thinking", True)
         self.enable_caching = config.get("enable_caching", False)
         self.cache_prefix: list[str] = []
+        self._response_cache: dict[str, LLMResponse] = {}
+        """本地响应缓存（LRU/TTL），key = _build_cache_key(kwargs)"""
 
         # 流式回调
         self.on_stream: Callable[[str], None] | None = None
@@ -161,6 +163,34 @@ class LLMProvider(ABC):
         #   on_content_block("tool_use", {"name": "...", "input": {...}})
         #   on_content_block("thinking", {"content": "..."})
         self.on_content_block: Callable[[str, dict], None] | None = None
+
+    # ── 本地响应缓存（LLMResponse 级别） ──
+
+    def _build_cache_key(self, kwargs: dict) -> str:
+        """从调用参数构建缓存键。"""
+        import hashlib
+        # 提取对缓存有影响的参数（排除 stream 标志）
+        key_parts = {
+            "model": kwargs.get("model", ""),
+            "messages": kwargs.get("messages", []),
+            "tools": kwargs.get("tools"),
+            "temperature": kwargs.get("temperature"),
+            "max_tokens": kwargs.get("max_tokens"),
+            "system": kwargs.get("system", kwargs.get("messages", [{}])[0].get("content", "")),
+        }
+        raw = json.dumps(key_parts, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    def _cache_response(self, key: str, response: LLMResponse):
+        """缓存响应（LRU：最多 64 条）。"""
+        if not self.enable_caching:
+            return
+        MAX_CACHE = 64
+        if len(self._response_cache) >= MAX_CACHE:
+            # 移除最早的一条
+            oldest = next(iter(self._response_cache))
+            self._response_cache.pop(oldest, None)
+        self._response_cache[key] = response
 
     @abstractmethod
     def chat(self, system_prompt: str, messages: list[dict],
@@ -398,10 +428,19 @@ class OpenAIProvider(LLMProvider):
             extra_body["thinking"] = {"type": "disabled"}
 
         # 2. 上下文缓存（prefix caching）
-        if self.enable_caching and self.cache_prefix and self._supports_prefix_cache:
-            # DeepSeek prefix caching: 系统提示词会自动缓存
-            # 标记系统消息和前面的消息为可缓存
-            pass  # 通过 extra_headers 控制
+        cache_key = None
+        if self.enable_caching:
+            if self._supports_prefix_cache and self.cache_prefix:
+                # DeepSeek prefix caching: 设置缓存前缀标记
+                # 系统提示词和前 N 条消息自动成为缓存前缀
+                kwargs.setdefault("extra_headers", {})
+                kwargs["extra_headers"]["x-deepseek-cache-prefix"] = "1"
+            # 使用本地响应缓存（LRU + MD5 key）
+            cache_key = self._build_cache_key(kwargs)
+            cached = self._response_cache.get(cache_key)
+            if cached:
+                _log.info("response_cache_hit: key=%s", cache_key[:16])
+                return cached
 
         if extra_body:
             kwargs["extra_body"] = extra_body
@@ -417,10 +456,16 @@ class OpenAIProvider(LLMProvider):
                 stream_extra = extra_body.copy() if extra_body else {}
                 if stream_extra:
                     kwargs["extra_body"] = stream_extra
-                return self._chat_stream(client, **kwargs)
+                result = self._chat_stream(client, **kwargs)
+                # 流式响应不缓存（每次不同）
+                return result
             else:
                 response = client.chat.completions.create(**kwargs)
-                return self._parse_response(response)
+                parsed = self._parse_response(response)
+                # 非流式成功响应 → 写入缓存
+                if cache_key and self.enable_caching:
+                    self._cache_response(cache_key, parsed)
+                return parsed
         except Exception as e:
             return LLMResponse(
                 content=f"[API 错误] [{classify_error(e).value}] {e}",
@@ -701,12 +746,18 @@ class OpenAIProvider(LLMProvider):
         try:
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
-                # 停滞检测：有事件就重置计时
                 now = time.time()
-                last_event_time = now
 
+                # 无有效内容块 → 跳过但不重置计时（连续的空白块也算停滞）
                 if not chunk.choices or len(chunk.choices) == 0:
+                    # 被动超时：30s 无任何有效事件
+                    if now - last_event_time > STALL_PASSIVE_TIMEOUT:
+                        _log.warning("stream_stalled_passive: 无有效事件超过 %ss", STALL_PASSIVE_TIMEOUT)
+                        raise TimeoutError(f"流式响应停滞（无有效事件 {STALL_PASSIVE_TIMEOUT}s）")
                     continue
+
+                # 有有效内容 → 重置被动超时计时器
+                last_event_time = now
 
                 delta = chunk.choices[0].delta
                 finish = chunk.choices[0].finish_reason
@@ -755,11 +806,21 @@ class OpenAIProvider(LLMProvider):
         except Exception as stream_err:
             _log.warning("stream_fallback: %s", stream_err)
             kwargs.pop("stream", None)
-            kwargs.pop("extra_body", None)
+            # 保留 extra_body（包含 DeepSeek thinking 控制等关键参数）
+            # 仅在 extra_body 导致流式失败时才移除
             try:
                 response = client.chat.completions.create(**kwargs)
                 return self._parse_response(response)
             except Exception as fallback_err:
+                # 如果带 extra_body 失败，尝试移除后重试
+                if "extra_body" in kwargs:
+                    _log.warning("stream_fallback_extra_body_removed: %s", fallback_err)
+                    kwargs.pop("extra_body")
+                    try:
+                        response = client.chat.completions.create(**kwargs)
+                        return self._parse_response(response)
+                    except Exception as final_err:
+                        raise final_err from fallback_err
                 raise fallback_err from stream_err
 
         # 最后的工具块
