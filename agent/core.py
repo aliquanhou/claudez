@@ -299,11 +299,11 @@ class Agent:
                     self.debug.log_tool_call(n, a, r, (time.time()-_t0)*1000, not r.startswith("[错误]"))
                     results.append((n, a, cid, r))
 
-                # 按原始顺序排序（保证 session 消息序列正确）
-                order = {(n, a, cid): i for i, (n, a, cid) in enumerate(
+                # 按原始顺序排序（用 cid 做 key，保证 session 消息序列正确）
+                order = {cid: i for i, (_, _, cid) in enumerate(
                     [(x[0], x[1], x[2]) for x in tool_tasks]
                 )}
-                results.sort(key=lambda x: order.get((x[0], x[1], x[2]), 999))
+                results.sort(key=lambda x: order.get(x[2], 999))
 
                 # ★ 写入 session：必须成对出现 assistant(tc=[...]) + tool(...) + tool(...)
                 #   生成的消息序列由 LLM 返回的同一组 tool_calls 保证完整性
