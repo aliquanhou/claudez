@@ -118,6 +118,10 @@ class WebServer:
         # 线程安全 busy 标志
         self._busy_lock = threading.Lock()
         self._busy = False
+        self._agent_thread: threading.Thread | None = None
+        """当前正在运行的 Agent 线程（用于精确跟踪结束，替代硬编码 auto_clear）"""
+        self._agent_timeout: float = 3600.0
+        """Agent 超时（从 config 读取，用于兜底解锁）"""
 
         self._last_text = ""
 
@@ -170,20 +174,27 @@ class WebServer:
 
         @app.get("/api/stream")
         async def sse_stream(request: Request):
-            queue: q_module.Queue = q_module.Queue(maxsize=1000)
+            queue: q_module.Queue = q_module.Queue(maxsize=5000)
             with self._sse_lock:
                 self._sse_queues.append(queue)
 
             async def event_generator():
                 loop = asyncio.get_event_loop()
+                disconnected = False
                 try:
                     while True:
                         if await request.is_disconnected():
+                            disconnected = True
                             break
                         try:
-                            data = await loop.run_in_executor(
-                                None, lambda: queue.get(timeout=0.5)
+                            data = await asyncio.wait_for(
+                                loop.run_in_executor(None, lambda: queue.get(timeout=0.5)),
+                                timeout=1.0,
                             )
+                        except asyncio.TimeoutError:
+                            # wait_for 超时（queue.get 被阻塞超过 0.5s → keepalive）
+                            yield {"event": "ping", "data": json.dumps({"type": "keepalive"})}
+                            continue
                         except q_module.Empty:
                             yield {"event": "ping", "data": json.dumps({"type": "keepalive"})}
                             continue
@@ -198,6 +209,8 @@ class WebServer:
                     with self._sse_lock:
                         if queue in self._sse_queues:
                             self._sse_queues.remove(queue)
+                    if disconnected:
+                        _log.debug("sse_client_disconnected: queues=%d", len(self._sse_queues))
 
             return EventSourceResponse(event_generator())
 
@@ -215,10 +228,17 @@ class WebServer:
                 return {"status": "error", "message": "消息不能为空"}
             self._last_text = text
 
+            # 从 Agent 配置读取实际超时时间
+            try:
+                self._agent_timeout = float(self.agent.config.get("timeout", 3600))
+            except (AttributeError, TypeError, ValueError):
+                self._agent_timeout = 3600.0
+
             # 创建 WebStreamHandler 桥接
             handler = WebStreamHandler(self._push_sse)
 
             def run_agent():
+                """在后台线程中运行 Agent。"""
                 try:
                     self._push_sse("session_start", {"agent": "claudez"})
                     self._run_with_handler(text, handler)
@@ -234,16 +254,20 @@ class WebServer:
                         pass
                     with self._busy_lock:
                         self._busy = False
+                    self._agent_thread = None
 
             t = threading.Thread(target=run_agent, daemon=True, name="claudez-agent")
+            self._agent_thread = t
             t.start()
 
-            # 安全兜底：60s 后自动解锁（防止线程挂死）
-            def auto_clear():
-                time.sleep(60)
-                with self._busy_lock:
-                    self._busy = False
-            threading.Thread(target=auto_clear, daemon=True).start()
+            # 安全兜底：使用 config 中的超时时间（不是硬编码 60s）
+            # 仅在 Agent 线程没有正常结束时触发
+            timeout_seconds = min(self._agent_timeout + 30, 7200)  # 最多 2 小时
+            threading.Thread(
+                target=self._safe_unlock_after,
+                args=(t, timeout_seconds),
+                daemon=True,
+            ).start()
 
             return {"status": "ok"}
 
@@ -559,6 +583,17 @@ class WebServer:
 
     def get_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    def _safe_unlock_after(self, thread: threading.Thread, timeout: float):
+        """安全兜底：在指定时间后如果线程还在运行则强制解锁。"""
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            _log.warning("safe_unlock: Agent 线程 %s 在 %ss 后仍未结束，强制解锁",
+                         thread.name, timeout)
+            if self.agent:
+                self.agent.stop()
+            with self._busy_lock:
+                self._busy = False
 
     def _run_with_handler(self, text: str, handler: WebStreamHandler):
         """通过 handler 桥接执行 Agent。"""
