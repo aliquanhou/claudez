@@ -300,7 +300,7 @@ class Agent:
                     results.append((n, a, cid, r))
 
                 # 按原始顺序排序（保证 session 消息序列正确）
-                order = {(n, a, cid): i for i, (n, a, cid, _) in enumerate(
+                order = {(n, a, cid): i for i, (n, a, cid) in enumerate(
                     [(x[0], x[1], x[2]) for x in tool_tasks]
                 )}
                 results.sort(key=lambda x: order.get((x[0], x[1], x[2]), 999))
