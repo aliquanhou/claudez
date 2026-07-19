@@ -1,0 +1,25 @@
+﻿# ClaudeZ v2.1 — Python 依赖
+# 使用: pip install -r requirements.txt
+
+# LLM Provider
+anthropic>=0.49.0
+openai>=1.55.0
+
+# Web GUI
+fastapi>=0.115.0
+uvicorn>=0.32.0
+sse-starlette>=2.2.0
+
+# 向量记忆（可选）
+chromadb>=0.5.0
+sentence-transformers>=3.3.0
+
+# 系统监控
+psutil>=6.1.0
+
+# Schema 校验
+pydantic>=2.9.0
+
+# HTTP 请求
+httpx>=0.28.0
+requests>=2.32.0
