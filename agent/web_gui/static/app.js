@@ -68,8 +68,8 @@ function renderDiff(refEl,diffText,filePath){
   if(filePath){var ext=filePath.split('.').pop().toLowerCase();lang=LM[ext]||''}
   var add=0,del=0;lines.forEach(function(l){if(l.startsWith('+')&&!l.startsWith('+++'))add++;if(l.startsWith('-')&&!l.startsWith('---'))del++});
   var pm=(add?'+'+add:'')+(del?'  -'+del:'');
-  var hdr=div('diff-hdr');hdr.innerHTML='<span>📝 '+pm+(lang?'  .'+lang:'')+'</span><span style="margin-left:auto;font-size:10px;color:var(--fg-3)">[collapse]</span>';
-  hdr.onclick=function(){db.classList.toggle('closed');hdr.querySelector('span:last-child').textContent=db.classList.contains('closed')?'[expand]':'[collapse]'};
+  var hdr=div('diff-hdr');hdr.innerHTML='<span>📝 '+pm+(lang?'  .'+lang:'')+'</span><span style="margin-left:auto;font-size:10px;color:var(--fg-3)">[收起]</span>';
+  hdr.onclick=function(){db.classList.toggle('closed');hdr.querySelector('span:last-child').textContent=db.classList.contains('closed')?'[展开]':'[收起]'};
   var body=div('diff-body'),lineNum=0;
   lines.forEach(function(l){
     if(l.startsWith('@@')){var h=div('diff-hunk');h.textContent=l;body.appendChild(h);var m=l.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)/);if(m)lineNum=parseInt(m[1])-1;return}
@@ -83,7 +83,7 @@ function renderDiff(refEl,diffText,filePath){
   db.appendChild(hdr);db.appendChild(body);
   refEl.parentNode.insertBefore(db,refEl.nextSibling);scrollB();
   var total=body.querySelectorAll('.diff-line').length;
-  if(total>30){db.classList.add('closed');hdr.querySelector('span:last-child').textContent='[expand]'}
+  if(total>30){db.classList.add('closed');hdr.querySelector('span:last-child').textContent='[展开]'}
   if(total>50){body.style.maxHeight='260px';body.style.overflowY='auto'}
 }
 
@@ -149,7 +149,7 @@ function addToolOutput(name,line){
 function addThink(text){
   var last=msgs.lastElementChild;
   if(last&&last.classList.contains('think-block')){var b=last.querySelector('.think-b');if(b){b.textContent+=text;scrollB();return last}}
-  var el=div('think-block');el.innerHTML='<div class="think-h">🧠 think</div><div class="think-b">'+esc(text)+'</div>';msgs.appendChild(el);
+  var el=div('think-block');el.innerHTML='<div class="think-h">🧠 思考</div><div class="think-b">'+esc(text)+'</div>';msgs.appendChild(el);
   el.querySelector('.think-h').onclick=function(){el.classList.toggle('collapsed')};scrollB();return el
 }
 function addSys(text){var el=div('msg msg-sys');el.innerHTML='<div class="mc">'+esc(text)+'</div>';msgs.appendChild(el);scrollB()}
@@ -166,9 +166,9 @@ function connectSSE(){
   S.sse.addEventListener('tool_use_start',function(e){try{var d=JSON.parse(e.data);addToolCall(d.tool_name,d.file_path||'',d.args_preview||'');addEvent('tool','> '+d.tool_name+(d.file_path?' '+d.file_path:''));setBusy(1)}catch(x){}});
   S.sse.addEventListener('tool_result',function(e){try{var d=JSON.parse(e.data);addToolResult(d.tool_name,d.status==='error',d.duration_ms||0,d.result||'',d.file_path||'');addEvent('tool',(d.status==='error'?'✗ ':'✓ ')+d.tool_name+(d.duration_ms?' '+(d.duration_ms/1000).toFixed(1)+'s':''))}catch(x){}});
   S.sse.addEventListener('tool_output',function(e){try{var d=JSON.parse(e.data);if(d.line)addToolOutput(d.tool_name,d.line)}catch(x){}});
-  S.sse.addEventListener('session_start',function(e){try{setBusy(1);addEvent('session','▶ start')}catch(x){}});
-  S.sse.addEventListener('session_end',function(e){try{setBusy(0);addEvent('session','■ end');C.updateDebugSummary()}catch(x){}});
-  S.sse.addEventListener('plugins_changed',function(e){try{addEvent('session','plugin state changed');buildPlugins();buildTools()}catch(x){}});
+  S.sse.addEventListener('session_start',function(e){try{setBusy(1);addEvent('session','▶ 开始')}catch(x){}});
+  S.sse.addEventListener('session_end',function(e){try{setBusy(0);addEvent('session','■ 结束');C.updateDebugSummary()}catch(x){}});
+  S.sse.addEventListener('plugins_changed',function(e){try{addEvent('session','插件状态已变更');buildPlugins();buildTools()}catch(x){}});
   S.sse.addEventListener('error',function(e){try{var d=JSON.parse(e.data);if(d.message){addErr(d.message);setBusy(0);addEvent('error',d.message)}}catch(x){}})
 }
 
@@ -182,34 +182,34 @@ function send(){
   S._sending=true;setBusy(1);addUser(t);
   fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})
   .then(function(r){return r.json()})
-  .then(function(d){if(d.status!=='ok'){addErr(d.message||'send failed');setBusy(0)}S._sending=false})
-  .catch(function(e){addErr('network: '+e.message);setBusy(0);S._sending=false})
+  .then(function(d){if(d.status!=='ok'){addErr(d.message||'发送失败');setBusy(0)}S._sending=false})
+  .catch(function(e){addErr('网络错误: '+e.message);setBusy(0);S._sending=false})
 }
-function stop(){if(!S.busy)return;fetch('/api/stop',{method:'POST'}).catch(function(){});setBusy(0);addSys('stopped')}
+function stop(){if(!S.busy)return;fetch('/api/stop',{method:'POST'}).catch(function(){});setBusy(0);addSys('已终止')}
 function clear(){
   msgs.innerHTML='';S.toolCount=0;S.events=[];
   $('st-c').textContent='0';
-  $('ev-c').innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">Waiting for events…</div>';
+  $('ev-c').innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">等待事件…</div>';
   fetch('/api/clear',{method:'POST'}).catch(function(){});
-  addSys('cleared');toast('Cleared','info')
+  addSys('已清空');toast('已清空','info')
 }
 function setBusy(b){
-  S.busy=b;sb.disabled=b;sb.textContent=b?'…':'Send';ib.disabled=b;
+  S.busy=b;sb.disabled=b;sb.textContent=b?'…':'发送';ib.disabled=b;
   $('btn-stop').disabled=!b;
   hds.className='hd-status'+(b?' busy':'');
-  st.textContent=b?'Busy':'Ready';
+  st.textContent=b?'工作中':'就绪';
 }
 
 /* ═══════════════════════════════════════════
    EVENTS PANEL
    ═══════════════════════════════════════════ */
-var EV_TYPES=['all','session','tool','thought','text','error'];
+var EV_TYPES=['all','session','tool','thought','text','error'];var EV_LABELS={all:'全部',session:'会话',tool:'工具',thought:'思考',text:'文本',error:'错误'};var EV_SHORT={session:'会话',tool:'工具',thought:'思考',text:'文本',error:'错误'};
 function renderEvBar(){
   var c=$('ev-bar');c.innerHTML='<span class="ev-count" id="ev-count">0</span>';
   EV_TYPES.forEach(function(t){
     var b=document.createElement('button');
     b.className='ev-f'+(t==='all'?' act':'');
-    b.textContent=t;
+    b.textContent=EV_LABELS[t]||t;
     b.onclick=function(){c.querySelectorAll('.ev-f').forEach(function(x){x.classList.remove('act')});b.classList.add('act');S.evFilter=t;renderEvLog()};
     c.appendChild(b)
   })
@@ -222,11 +222,12 @@ function addEvent(type,data){
 }
 function renderEvLog(){
   var c=$('ev-c'),filtered=S.evFilter==='all'?S.events:S.events.filter(function(e){return e.type===S.evFilter});
-  if(filtered.length===0){c.innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">'+(S.evFilter==='all'?'Waiting for events…':'No '+S.evFilter+' events')+'</div>';return}
+  if(filtered.length===0){c.innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">'+(S.evFilter==='all'?'等待事件…':'无 '+S.evFilter+' 事件')+'</div>';return}
   var show=filtered.slice(-100),h='';
   show.forEach(function(e){
     var t=new Date(e.ts).toLocaleTimeString(),d=typeof e.data==='string'?e.data:JSON.stringify(e.data);
-    h+='<div class="ev-item"><span class="ev-tm">'+t+'</span><span class="ev-ty '+e.type+'">'+e.type.substring(0,5)+'</span><span class="ev-da">'+esc(d.substring(0,90))+'</span></div>'
+    var cl=EV_SHORT[e.type]||e.type.substring(0,5);
+    h+='<div class="ev-item"><span class="ev-tm">'+t+'</span><span class="ev-ty '+e.type+'">'+cl+'</span><span class="ev-da">'+esc(d.substring(0,90))+'</span></div>'
   });
   c.innerHTML=h;c.scrollTop=c.scrollHeight
 }
@@ -235,17 +236,17 @@ function renderEvLog(){
    PLUGIN PANEL
    ═══════════════════════════════════════════ */
 async function buildPlugins(){
-  var c=$('plugs-c');c.innerHTML='<div class="plug-loading">⟳ Loading…</div>';
+  var c=$('plugs-c');c.innerHTML='<div class="plug-loading">⟳ 加载中…</div>';
   try{
     var r=await fetch('/api/plugins'),d=await r.json(),
         pl=(d.plugins||[]).filter(function(p){return p.enabled});
     c.innerHTML='';
-    if(pl.length===0){var e=div('plug-empty');e.textContent='No active plugins';c.appendChild(e)}
+    if(pl.length===0){var e=div('plug-empty');e.textContent='没有已启用的插件';c.appendChild(e)}
     else{pl.forEach(function(p){renderPluginCard(c,p)})}
     var bar=div('plug-actions');bar.style.cssText='padding:8px;border-top:1px solid var(--bd)';
-    bar.innerHTML='<button class="dbg-btn-full" onclick="rescanPlugins()" style="margin:0">🔄 Rescan + Mount All</button>';
+    bar.innerHTML='<button class="dbg-btn-full" onclick="rescanPlugins()" style="margin:0">🔄 重新扫描并挂载全部</button>';
     c.appendChild(bar)
-  }catch(e){c.innerHTML='<div class="plug-empty">Plugin API error</div>'}
+  }catch(e){c.innerHTML='<div class="plug-empty">插件 API 错误</div>'}
 }
 function renderPluginCard(container,plugin){
   var card=div('plug-card');
@@ -253,15 +254,15 @@ function renderPluginCard(container,plugin){
   var th='';
   allTools.forEach(function(t){
     var m=t.masked===true,s=m?' style="opacity:0.4;text-decoration:line-through"':'';
-    th+='<span class="plug-tag host"'+s+'>'+(t.icon?t.icon+' ':'')+esc(t.display_name||t.name)+(t.version?' '+t.version:'')+(m?' <button class="unmount-btn" style="display:inline;color:var(--accent4);font-size:9px" onclick="unmaskTool(\''+t.name+'\')" title="Restore">↺</button>':' <button class="unmount-btn" style="display:inline;font-size:9px" onclick="maskTool(\''+t.name+'\')" title="Mask">✕</button>')+'</span>'
+    th+='<span class="plug-tag host"'+s+'>'+(t.icon?t.icon+' ':'')+esc(t.display_name||t.name)+(t.version?' '+t.version:'')+(m?' <button class="unmount-btn" style="display:inline;color:var(--accent4);font-size:9px" onclick="unmaskTool(\''+t.name+'\')" title="恢复">↺</button>':' <button class="unmount-btn" style="display:inline;font-size:9px" onclick="maskTool(\''+t.name+'\')" title="屏蔽">✕</button>')+'</span>'
   });
-  card.innerHTML='<div class="plug-card-header"><span class="plug-icon">'+icon+'</span><span class="plug-name">'+esc(plugin.name)+'</span><span class="plug-version">v'+esc(plugin.version)+'</span><span style="font-size:10px;color:var(--fg-1);margin-left:auto"><span style="color:var(--accent4)">'+active+'</span>'+(masked>0?' | <span style="color:var(--fg-2)">'+masked+' masked</span>':'')+'</span></div><div class="plug-desc">'+esc(plugin.description||'')+'</div><div class="plug-meta"><span>🧰 '+allTools.length+' tools</span><span>👤 '+esc(plugin.author)+'</span><span>📁 '+esc(plugin.source)+'</span></div>'+(th?'<div class="plug-tools">'+th+'</div>':'<div class="plug-desc" style="font-size:10px;color:var(--fg-2)">No tools</div>')+'<div class="plug-actions"><button class="plug-btn" onclick="reprobePlugin(\''+esc(plugin.id)+'\')">🔄 Re-probe</button></div>';
+  card.innerHTML='<div class="plug-card-header"><span class="plug-icon">'+icon+'</span><span class="plug-name">'+esc(plugin.name)+'</span><span class="plug-version">v'+esc(plugin.version)+'</span><span style="font-size:10px;color:var(--fg-1);margin-left:auto"><span style="color:var(--accent4)">'+active+'</span>'+(masked>0?' | <span style="color:var(--fg-2)">'+masked+' 已屏蔽</span>':'')+'</span></div><div class="plug-desc">'+esc(plugin.description||'')+'</div><div class="plug-meta"><span>🧰 '+allTools.length+' 个工具</span><span>👤 '+esc(plugin.author)+'</span><span>📁 '+esc(plugin.source)+'</span></div>'+(th?'<div class="plug-tools">'+th+'</div>':'<div class="plug-desc" style="font-size:10px;color:var(--fg-2)">无工具</div>')+'<div class="plug-actions"><button class="plug-btn" onclick="reprobePlugin(\''+esc(plugin.id)+'\')">🔄 重新探测</button></div>';
   container.appendChild(card)
 }
-async function reprobePlugin(id){try{toast('Re-probing…','info');var r=await fetch('/api/plugins/'+encodeURIComponent(id)+'/reprobe',{method:'POST'}),d=await r.json();if(d.success){toast('Mounted '+d.tool_count+' tools','success');buildPlugins();buildTools()}else{toast('Failed: '+(d.message||''),'error')}}catch(e){toast('Error: '+e.message,'error')}}
-async function maskTool(n){try{var r=await fetch('/api/plugins/com.claudez.plugins.host-tools/tools/'+encodeURIComponent(n)+'/mask',{method:'POST'}),d=await r.json();if(d.success){toast('Masked: '+n,'success');buildPlugins();buildTools()}else{toast('Failed: '+(d.message||''),'error')}}catch(e){toast('Error: '+e.message,'error')}}
-async function unmaskTool(n){try{var r=await fetch('/api/plugins/com.claudez.plugins.host-tools/tools/'+encodeURIComponent(n)+'/unmask',{method:'POST'}),d=await r.json();if(d.success){toast('Restored: '+n,'success');buildPlugins();buildTools()}else{toast('Failed: '+(d.message||''),'error')}}catch(e){toast('Error: '+e.message,'error')}}
-async function rescanPlugins(){try{toast('Rescanning…','info');var r=await fetch('/api/plugins/discover',{method:'POST'}),d=await r.json();toast(d.tool_count+' tools mounted','success');buildPlugins();buildTools()}catch(e){toast('Error: '+e.message,'error')}}
+async function reprobePlugin(id){try{toast('正在重新探测…','info');var r=await fetch('/api/plugins/'+encodeURIComponent(id)+'/reprobe',{method:'POST'}),d=await r.json();if(d.success){toast('已挂载 '+d.tool_count+' 个工具','success');buildPlugins();buildTools()}else{toast('失败: '+(d.message||''),'error')}}catch(e){toast('错误: '+e.message,'error')}}
+async function maskTool(n){try{var r=await fetch('/api/plugins/com.claudez.plugins.host-tools/tools/'+encodeURIComponent(n)+'/mask',{method:'POST'}),d=await r.json();if(d.success){toast('已屏蔽: '+n,'success');buildPlugins();buildTools()}else{toast('失败: '+(d.message||''),'error')}}catch(e){toast('错误: '+e.message,'error')}}
+async function unmaskTool(n){try{var r=await fetch('/api/plugins/com.claudez.plugins.host-tools/tools/'+encodeURIComponent(n)+'/unmask',{method:'POST'}),d=await r.json();if(d.success){toast('已恢复: '+n,'success');buildPlugins();buildTools()}else{toast('失败: '+(d.message||''),'error')}}catch(e){toast('错误: '+e.message,'error')}}
+async function rescanPlugins(){try{toast('正在重新扫描…','info');var r=await fetch('/api/plugins/discover',{method:'POST'}),d=await r.json();toast('已挂载 '+d.tool_count+' 个工具','success');buildPlugins();buildTools()}catch(e){toast('错误: '+e.message,'error')}}
 
 /* ═══════════════════════════════════════════
    TOOLS PANEL
@@ -272,7 +273,7 @@ var _builtinNames=['read','write','edit','glob','grep','bash','web','web_search'
 var _builtinCat={read:'file',write:'file',edit:'file',glob:'file',grep:'file',bash:'shell',web:'web',web_search:'web',process:'system',monitor:'system',artifact:'artifact',subagent:'subagent',workflow:'workflow',webhook:'webhook'};
 window._toolStats={};window._hostIcons={};
 async function buildTools(){
-  var c=$('tools-c');c.innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">⟳ Loading…</div>';
+  var c=$('tools-c');c.innerHTML='<div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">⟳ 加载中…</div>';
   try{
     var r=await fetch('/api/plugins'),d=await r.json();
     if(!d||!d.tools){renderBuiltin(c);return}
@@ -291,11 +292,11 @@ async function buildTools(){
         if(t.source==='host')el.classList.add('host-tool');
         if(masked)el.style.opacity='.45';
         var v=t.version?'<span class="tv">'+esc(t.version)+'</span>':'';
-        el.innerHTML='<span class="td idle" id="td-'+t.name+'"></span><span class="ti">'+t.icon+'</span><span class="tn">'+esc(t.display_name)+(masked?' (masked)':'')+'</span>'+v+'<span class="tc" id="tcnt-'+t.name+'">0</span>';
+        el.innerHTML='<span class="td idle" id="td-'+t.name+'"></span><span class="ti">'+t.icon+'</span><span class="tn">'+esc(t.display_name)+(masked?' (已屏蔽)':'')+'</span>'+v+'<span class="tc" id="tcnt-'+t.name+'">0</span>';
         if(t.source==='host'){
           var ub=document.createElement('button');ub.className='unmount-btn';
-          if(masked){ub.textContent='↺';ub.style.color='var(--accent4)';ub.title='Restore';ub.onclick=function(e){e.stopPropagation();unmaskTool(t.name)}}
-          else{ub.textContent='✕';ub.title='Mask';ub.onclick=function(e){e.stopPropagation();maskTool(t.name)}}
+          if(masked){ub.textContent='↺';ub.style.color='var(--accent4)';ub.title='恢复';ub.onclick=function(e){e.stopPropagation();unmaskTool(t.name)}}
+          else{ub.textContent='✕';ub.title='屏蔽';ub.onclick=function(e){e.stopPropagation();maskTool(t.name)}}
           el.appendChild(ub)
         }
         g.appendChild(el)
@@ -330,45 +331,44 @@ var _o2=addToolCall;addToolCall=function(n,p,e){updateTD(n,'running');_o2(n,p,e)
    ═══════════════════════════════════════════ */
 function buildConfig(){
   var c=$('cfg-c');
-  // Build the full glass UI
   c.innerHTML=
     '<div class="cfg-section">'+
-      '<div class="cfg-section-title">🤖 LLM Provider</div>'+
-      '<div class="cfg-row"><label class="cfg-label">Provider</label>'+
+      '<div class="cfg-section-title">🤖 LLM 提供商</div>'+
+      '<div class="cfg-row"><label class="cfg-label">提供商</label>'+
         '<select class="cfg-select" id="cfg-provider"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic (Claude)</option></select></div>'+
-      '<div class="cfg-row"><label class="cfg-label">Model</label>'+
-        '<input class="cfg-input" id="cfg-model" placeholder="e.g. deepseek-chat" spellcheck="false"></div>'+
-      '<div class="cfg-row"><label class="cfg-label">API Key <span style="color:var(--fg-3);font-weight:400">(set once, never returned)</span></label>'+
-        '<input class="cfg-input cfg-input-pw" id="cfg-apikey" type="password" placeholder="sk-… (stored in memory only)" autocomplete="off"></div>'+
+      '<div class="cfg-row"><label class="cfg-label">模型</label>'+
+        '<input class="cfg-input" id="cfg-model" placeholder="例如 deepseek-chat" spellcheck="false"></div>'+
+      '<div class="cfg-row"><label class="cfg-label">API 密钥 <span style="color:var(--fg-3);font-weight:400">(设置后不再返回)</span></label>'+
+        '<input class="cfg-input cfg-input-pw" id="cfg-apikey" type="password" placeholder="sk-… (仅内存存储)" autocomplete="off"></div>'+
     '</div>'+
     '<div class="cfg-section">'+
-      '<div class="cfg-section-title">🎯 Generation</div>'+
-      '<div class="cfg-row"><label class="cfg-label">Temperature <span class="cfg-unit" id="cfg-temp-val">0.0</span></label>'+
+      '<div class="cfg-section-title">🎯 生成参数</div>'+
+      '<div class="cfg-row"><label class="cfg-label">温度 <span class="cfg-unit" id="cfg-temp-val">0.0</span></label>'+
         '<div class="cfg-slider"><input type="range" id="cfg-temp" min="0" max="2" step="0.05" value="0"><span class="cfg-slider-val" id="cfg-temp-display">0.0</span></div></div>'+
-      '<div class="cfg-row"><label class="cfg-label">Max Output Tokens <span class="cfg-unit" id="cfg-tk-val">8192</span></label>'+
+      '<div class="cfg-row"><label class="cfg-label">最大输出 Token <span class="cfg-unit" id="cfg-tk-val">8192</span></label>'+
         '<div class="cfg-slider"><input type="range" id="cfg-tokens" min="256" max="32768" step="128" value="8192"><span class="cfg-slider-val" id="cfg-tk-display">8,192</span></div></div>'+
-      '<div class="cfg-row"><label class="cfg-label">Timeout (seconds) <span class="cfg-unit" id="cfg-to-val">3600</span></label>'+
+      '<div class="cfg-row"><label class="cfg-label">超时时间 (秒) <span class="cfg-unit" id="cfg-to-val">3600</span></label>'+
         '<div class="cfg-slider"><input type="range" id="cfg-timeout" min="30" max="14400" step="30" value="3600"><span class="cfg-slider-val" id="cfg-to-display">3,600</span></div></div>'+
     '</div>'+
     '<div class="cfg-section">'+
-      '<div class="cfg-section-title">⚙️ Mode</div>'+
-      '<div class="cfg-row"><label class="cfg-label">Workflow</label>'+
-        '<select class="cfg-select" id="cfg-workflow"><option value="agent">Agent (Full)</option><option value="chat">Chat</option><option value="research">Research</option><option value="coding">Coding</option><option value="debug">Debug</option></select></div>'+
-      '<div class="cfg-row"><label class="cfg-label">Permission Mode</label>'+
-        '<select class="cfg-select" id="cfg-perm"><option value="auto">Auto (Recommended)</option><option value="ask">Ask</option><option value="deny">Deny All</option><option value="readonly">Read Only</option></select></div>'+
+      '<div class="cfg-section-title">⚙️ 模式</div>'+
+      '<div class="cfg-row"><label class="cfg-label">工作流</label>'+
+        '<select class="cfg-select" id="cfg-workflow"><option value="agent">Agent (全功能)</option><option value="chat">对话</option><option value="research">研究</option><option value="coding">编程</option><option value="debug">调试</option></select></div>'+
+      '<div class="cfg-row"><label class="cfg-label">权限模式</label>'+
+        '<select class="cfg-select" id="cfg-perm"><option value="auto">自动 (推荐)</option><option value="ask">询问</option><option value="deny">全部拒绝</option><option value="readonly">只读</option></select></div>'+
     '</div>'+
     '<div class="cfg-section">'+
-      '<div class="cfg-section-title">🔘 Toggles</div>'+
+      '<div class="cfg-section-title">🔘 开关</div>'+
       '<div class="cfg-toggle" id="cfg-thinking-row">'+
         '<div class="cfg-toggle-track" id="cfg-thinking-track"><div class="cfg-toggle-knob"></div></div>'+
-        '<span class="cfg-toggle-label">Disable Thinking Mode <span style="color:var(--fg-3)">(save tokens)</span></span></div>'+
+        '<span class="cfg-toggle-label">禁用思考模式 <span style="color:var(--fg-3)">(节省 Token)</span></span></div>'+
       '<div class="cfg-toggle" id="cfg-memory-row">'+
         '<div class="cfg-toggle-track" id="cfg-memory-track"><div class="cfg-toggle-knob"></div></div>'+
-        '<span class="cfg-toggle-label">Enable Semantic Memory <span style="color:var(--fg-3)">(ChromaDB)</span></span></div>'+
+        '<span class="cfg-toggle-label">启用语义记忆 <span style="color:var(--fg-3)">(ChromaDB)</span></span></div>'+
     '</div>'+
     '<div class="cfg-actions">'+
-      '<button class="cfg-btn" id="cfg-save-btn">💾 Save Configuration</button>'+
-      '<button class="cfg-btn-sec" onclick="loadConfig()">⟳ Reload from Server</button>'+
+      '<button class="cfg-btn" id="cfg-save-btn">💾 保存配置</button>'+
+      '<button class="cfg-btn-sec" onclick="loadConfig()">⟳ 从服务器重新加载</button>'+
       '<div class="cfg-status" id="cfg-status"></div>'+
     '</div>';
 
@@ -397,7 +397,7 @@ async function loadConfig(){
   var btn=$('cfg-save-btn');if(btn)btn.disabled=true;
   try{
     var r=await fetch('/api/config'),d=await r.json();
-    if(d.status==='error'){showCfgStatus('Failed to load config','err');return}
+    if(d.status==='error'){showCfgStatus('加载配置失败','err');return}
     S.config=d;
 
     // Provider
@@ -425,7 +425,7 @@ async function loadConfig(){
     // Update header
     $('st-m').textContent=d.model||'—'
 
-  }catch(e){showCfgStatus('Load error: '+e.message,'err')}
+  }catch(e){showCfgStatus('加载错误: '+e.message,'err')}
   if(btn)btn.disabled=false;
 }
 
@@ -439,50 +439,43 @@ function showCfgStatus(msg,type){
 
 function saveConfig(){
   var btn=$('cfg-save-btn');if(!btn||btn.disabled)return;
-  btn.disabled=true;btn.textContent='⟳ Saving…';
-  showCfgStatus('Saving…','');
+  btn.disabled=true;btn.textContent='⟳ 保存中…';
+  showCfgStatus('正在保存…','');
 
   var body={};
-  // Provider
   var pv=$('cfg-provider');if(pv)body.provider=pv.value;
-  // Model
   var mdl=$('cfg-model');if(mdl&&mdl.value.trim())body.model=mdl.value.trim();
-  // API Key (only send if changed)
   var ak=$('cfg-apikey');if(ak&&ak.value.trim()&&ak.value!=='············')body.api_key=ak.value.trim();
-  // Sliders
   body.temperature=parseFloat($('cfg-temp').value);
   body.max_tokens=parseInt($('cfg-tokens').value);
   body.timeout=parseInt($('cfg-timeout').value);
-  // Selects
   if($('cfg-workflow'))body.workflow_mode=$('cfg-workflow').value;
   if($('cfg-perm'))body.permission_mode=$('cfg-perm').value;
-  // Toggles
   var th=$('cfg-thinking-track');if(th)body.disable_thinking=th.classList.contains('on');
   var mem=$('cfg-memory-track');if(mem)body.enable_memory=mem.classList.contains('on');
 
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
   .then(function(r){return r.json()})
   .then(function(d){
-    btn.disabled=false;btn.textContent='💾 Save Configuration';
+    btn.disabled=false;btn.textContent='💾 保存配置';
     if(d.status==='ok'){
-      showCfgStatus('✓ Saved: '+((d.changes||[]).join(', ')||'all settings'),'ok');
-      // Reload config display
+      showCfgStatus('✓ 已保存: '+((d.changes||[]).join(', ')||'所有设置'),'ok');
       loadConfig();
-      toast('Configuration saved','success')
+      toast('配置已保存','success')
     }else if(d.status==='partial'){
       var msg='✓ '+(d.changes||[]).join(', ')+' | ⚠ '+(d.errors||[]).join('; ');
       showCfgStatus(msg,'partial');
       loadConfig();
-      toast('Partially saved — check errors','info')
+      toast('部分保存成功 — 请检查错误','info')
     }else{
-      showCfgStatus('✗ '+(d.message||'Save failed'),'err');
-      toast('Save failed','error')
+      showCfgStatus('✗ '+(d.message||'保存失败'),'err');
+      toast('保存失败','error')
     }
   })
   .catch(function(e){
-    btn.disabled=false;btn.textContent='💾 Save Configuration';
-    showCfgStatus('✗ Network error: '+e.message,'err');
-    toast('Network error','error')
+    btn.disabled=false;btn.textContent='💾 保存配置';
+    showCfgStatus('✗ 网络错误: '+e.message,'err');
+    toast('网络错误','error')
   })
 }
 
@@ -493,15 +486,14 @@ function updateDebugSummary(){
   fetch('/api/debug/summary').then(function(r){return r.json()}).then(function(d){
     var el=$('dbg-summary');if(!el)return;
     var s=d.summary||d||{};
-    el.textContent='Tools: '+(s.total_tool_calls||0)+' | API: '+(s.total_api_calls||0)+' | OK: '+(s.successful_tools||0)+' | Fail: '+(s.failed_tools||0)+' | Tool time: '+(s.total_tool_duration_ms/1000).toFixed(1)+'s | API time: '+(s.total_api_duration_ms/1000).toFixed(1)+'s';
-    // Stats grid
+    el.textContent='工具调用: '+(s.total_tool_calls||0)+' | API: '+(s.total_api_calls||0)+' | 成功: '+(s.successful_tools||0)+' | 失败: '+(s.failed_tools||0)+' | 工具耗时: '+(s.total_tool_duration_ms/1000).toFixed(1)+'s | API耗时: '+(s.total_api_duration_ms/1000).toFixed(1)+'s';
     var sg=$('dbg-stats');
     if(sg){
       sg.innerHTML=
-        '<div class="dbg-stat-item"><div class="dbg-stat-val">'+(s.total_tool_calls||0)+'</div><div class="dbg-stat-l">Tool Calls</div></div>'+
-        '<div class="dbg-stat-item"><div class="dbg-stat-val">'+(s.total_api_calls||0)+'</div><div class="dbg-stat-l">API Calls</div></div>'+
-        '<div class="dbg-stat-item"><div class="dbg-stat-val" style="color:'+(s.failed_tools>0?'var(--accent6)':'var(--accent4)')+'">'+(s.successful_tools||0)+'</div><div class="dbg-stat-l">Succeeded</div></div>'+
-        '<div class="dbg-stat-item"><div class="dbg-stat-val" style="color:'+(s.failed_tools>0?'var(--accent6)':'var(--fg-1)')+'">'+(s.failed_tools||0)+'</div><div class="dbg-stat-l">Failed</div></div>'
+        '<div class="dbg-stat-item"><div class="dbg-stat-val">'+(s.total_tool_calls||0)+'</div><div class="dbg-stat-l">工具调用</div></div>'+
+        '<div class="dbg-stat-item"><div class="dbg-stat-val">'+(s.total_api_calls||0)+'</div><div class="dbg-stat-l">API 调用</div></div>'+
+        '<div class="dbg-stat-item"><div class="dbg-stat-val" style="color:'+(s.failed_tools>0?'var(--accent6)':'var(--accent4)')+'">'+(s.successful_tools||0)+'</div><div class="dbg-stat-l">成功</div></div>'+
+        '<div class="dbg-stat-item"><div class="dbg-stat-val" style="color:'+(s.failed_tools>0?'var(--accent6)':'var(--fg-1)')+'">'+(s.failed_tools||0)+'</div><div class="dbg-stat-l">失败</div></div>'
     }
   }).catch(function(){})
 }
@@ -509,13 +501,13 @@ function updateDebugSummary(){
 function updatePluginDebug(){
   fetch('/api/debug/plugins').then(function(r){return r.json()}).then(function(d){
     var el=$('dbg-plugins');if(!el)return;
-    var logs=d.logs||[],h='<div style="margin-bottom:4px;font-size:9px;color:var(--fg-3)">'+logs.length+' events</div>';
+    var logs=d.logs||[],h='<div style="margin-bottom:4px;font-size:9px;color:var(--fg-3)">'+logs.length+' 个事件</div>';
     logs.slice(-80).reverse().forEach(function(l){
       var c=l.event==='ERR'?'var(--accent6)':l.event==='WARN'?'var(--accent5)':'var(--fg-1)';
       h+='<div style="border-bottom:1px solid rgba(255,255,255,0.02);padding:1px 0"><span style="color:var(--fg-3);width:46px;display:inline-block">'+(l.ts?esc(l.ts):'')+'</span><span style="color:'+c+';font-weight:600;width:44px;display:inline-block">'+esc(l.event||'')+'</span><span>'+esc(l.msg||'')+'</span></div>'
     });
     el.innerHTML=h;
-    if(!logs.length)el.innerHTML='<div style="color:var(--fg-2);font-size:10px">No plugin debug events</div>'
+    if(!logs.length)el.innerHTML='<div style="color:var(--fg-2);font-size:10px">没有插件调试事件</div>'
   }).catch(function(){})
 }
 
@@ -546,8 +538,8 @@ scrollH.onclick=function(){S.ab=1;scrollB();this.classList.remove('show')};
    ═══════════════════════════════════════════ */
 window.C={
   send:send,stop:stop,clear:clear,
-  exportDebug:function(){fetch('/api/debug').then(function(r){return r.text()}).then(function(t){if(navigator.clipboard)navigator.clipboard.writeText(t).then(function(){toast('Debug JSON copied','success')})}).catch(function(){toast('Copy failed','error')})},
-  exportDebugMD:function(){fetch('/api/debug/markdown').then(function(r){return r.text()}).then(function(t){if(navigator.clipboard)navigator.clipboard.writeText(t).then(function(){toast('Debug Markdown copied','success')})}).catch(function(){toast('Copy failed','error')})},
+  exportDebug:function(){fetch('/api/debug').then(function(r){return r.text()}).then(function(t){if(navigator.clipboard)navigator.clipboard.writeText(t).then(function(){toast('调试日志已复制 (JSON)','success')})}).catch(function(){toast('复制失败','error')})},
+  exportDebugMD:function(){fetch('/api/debug/markdown').then(function(r){return r.text()}).then(function(t){if(navigator.clipboard)navigator.clipboard.writeText(t).then(function(){toast('调试报告已复制 (Markdown)','success')})}).catch(function(){toast('复制失败','error')})},
   updateDebugSummary:updateDebugSummary,
   updatePluginDebug:updatePluginDebug,
   saveConfig:saveConfig,
@@ -583,7 +575,7 @@ function init(){
 
   // Loading screen
   setTimeout(function(){$('loading').classList.add('hidden')},500);
-  setTimeout(function(){addSys('ClaudeZ v2.1 — AI Agent');toast('Welcome','success')},700)
+  setTimeout(function(){addSys('ClaudeZ v2.1 — AI 智能体');toast('欢迎使用','success')},700)
 }
 
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init()

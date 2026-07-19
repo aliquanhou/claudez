@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>ClaudeZ — AI Agent</title>
+<title>ClaudeZ — AI 智能体</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
 <style>
 /* ═══════════════════════════════════════
@@ -395,21 +395,21 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
 <div class="orb orb-2"></div>
 <div class="orb orb-3"></div>
 
-<div id="loading"><div class="lr"></div><p>Initializing ClaudeZ</p></div>
+<div id="loading"><div class="lr"></div><p>正在启动 ClaudeZ</p></div>
 <div id="toasts"></div>
 
 <div id="app">
   <!-- ── HEADER ── -->
   <div id="hd">
     <div class="hd-brand"><div class="logo">⚡</div>ClaudeZ</div>
-    <div class="hd-status" id="hd-s"><span class="hd-dot"></span><span id="st-t">Ready</span></div>
+    <div class="hd-status" id="hd-s"><span class="hd-dot"></span><span id="st-t">就绪</span></div>
     <div class="hd-info">
-      <div class="hd-info-item"><span class="hd-info-l">Model</span><span class="hd-info-v" id="st-m">—</span></div>
-      <div class="hd-info-item"><span class="hd-info-l">Tools</span><span class="hd-info-v" id="st-c">0</span></div>
+      <div class="hd-info-item"><span class="hd-info-l">模型</span><span class="hd-info-v" id="st-m">—</span></div>
+      <div class="hd-info-item"><span class="hd-info-l">工具</span><span class="hd-info-v" id="st-c">0</span></div>
     </div>
     <div class="hd-actions">
-      <button class="hd-btn" onclick="C.clear()">🗑 Clear</button>
-      <button class="hd-btn" onclick="var e=document.getElementById('side');e.style.display=e.style.display==='none'?'flex':'none'">📑 Panel</button>
+      <button class="hd-btn" onclick="C.clear()">🗑 清空</button>
+      <button class="hd-btn" onclick="var e=document.getElementById('side');e.style.display=e.style.display==='none'?'flex':'none'">📑 面板</button>
     </div>
   </div>
 
@@ -417,14 +417,14 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
   <div id="main">
     <div id="chat-col">
       <div id="msgs"></div>
-      <div class="scroll-hint" id="scroll-hint">↓ New messages</div>
+      <div class="scroll-hint" id="scroll-hint">↓ 新消息</div>
       <div id="input-area">
         <div id="action-bar">
-          <button class="act-btn stop" id="btn-stop" onclick="C.stop()" disabled>⏹ Stop</button>
+          <button class="act-btn stop" id="btn-stop" onclick="C.stop()" disabled>⏹ 终止</button>
         </div>
         <div id="input-row">
-          <textarea id="inp" rows="1" placeholder="Enter a command · Enter to send · Shift+Enter new line"></textarea>
-          <button id="send-btn" onclick="C.send()">Send</button>
+          <textarea id="inp" rows="1" placeholder="输入指令 · Enter 发送 · Shift+Enter 换行"></textarea>
+          <button id="send-btn" onclick="C.send()">发送</button>
         </div>
       </div>
     </div>
@@ -432,33 +432,33 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
     <!-- ── SIDE PANEL ── -->
     <div id="side">
       <div class="panel-tabs">
-        <button class="p-tab active" data-t="tools">🛠 Tools</button>
-        <button class="p-tab" data-t="plugs">🧩 Plugins</button>
-        <button class="p-tab" data-t="ev">📡 Events</button>
-        <button class="p-tab" data-t="cfg">⚙ Config</button>
-        <button class="p-tab" data-t="dbg">🐛 Debug</button>
+        <button class="p-tab active" data-t="tools">🛠 工具</button>
+        <button class="p-tab" data-t="plugs">🧩 插件</button>
+        <button class="p-tab" data-t="ev">📡 事件</button>
+        <button class="p-tab" data-t="cfg">⚙ 配置</button>
+        <button class="p-tab" data-t="dbg">🐛 调试</button>
       </div>
       <div class="p-body">
         <div class="p-content active" id="pn-tools"><div id="tools-c"></div></div>
         <div class="p-content" id="pn-plugs"><div id="plugs-c"></div></div>
-        <div class="p-content" id="pn-ev"><div class="ev-bar" id="ev-bar"></div><div id="ev-c" style="flex:1;overflow-y:auto"><div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">Waiting for events…</div></div></div>
+        <div class="p-content" id="pn-ev"><div class="ev-bar" id="ev-bar"></div><div id="ev-c" style="flex:1;overflow-y:auto"><div style="padding:20px;text-align:center;color:var(--fg-3);font-size:11px">等待事件…</div></div></div>
         <div class="p-content" id="pn-cfg"><div class="cfg-wrap" id="cfg-c"></div></div>
         <div class="p-content" id="pn-dbg">
           <div class="dbg-body">
             <div class="dbg-sec">
-              <div class="dbg-sec-title">📊 Summary</div>
-              <div id="dbg-summary" class="dbg-summary">Run agent to see debug data</div>
+              <div class="dbg-sec-title">📊 运行摘要</div>
+              <div id="dbg-summary" class="dbg-summary">运行 Agent 后自动生成调试数据</div>
               <div id="dbg-stats" class="dbg-stat"></div>
             </div>
             <div class="dbg-sec">
-              <div class="dbg-sec-title">📋 Export</div>
-              <button class="dbg-btn-full" onclick="C.exportDebug()">📋 Copy Debug JSON</button>
-              <button class="dbg-btn-full" onclick="C.exportDebugMD()">📝 Copy Debug Markdown</button>
+              <div class="dbg-sec-title">📋 导出</div>
+              <button class="dbg-btn-full" onclick="C.exportDebug()">📋 复制调试日志 (JSON)</button>
+              <button class="dbg-btn-full" onclick="C.exportDebugMD()">📝 复制调试报告 (Markdown)</button>
             </div>
             <div class="dbg-plug-section">
-              <div class="dbg-sec-title">🧩 Plugin Debug</div>
-              <button class="dbg-btn-full" onclick="C.updatePluginDebug()">🔄 Refresh Plugin Log</button>
-              <div id="dbg-plugins" class="dbg-log">Click "Refresh Plugin Log" to see probe details</div>
+              <div class="dbg-sec-title">🧩 插件调试</div>
+              <button class="dbg-btn-full" onclick="C.updatePluginDebug()">🔄 刷新插件日志</button>
+              <div id="dbg-plugins" class="dbg-log">点击「刷新插件日志」查看探测详情</div>
             </div>
           </div>
         </div>
@@ -467,6 +467,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg-deep);color
   </div>
 </div>
 
-<script src="app.js?v=2.1"></script>
+<script>
+/* 内联：确保 loading 层在 JS 加载前消失 */
+(function(){var ls=document.getElementById('loading');if(ls){setTimeout(function(){ls.classList.add('hidden')},400);setTimeout(function(){ls.style.display='none'},1500)}})()
+</script>
+<script src="app.js?v=2.2"></script>
 </body>
 </html>
