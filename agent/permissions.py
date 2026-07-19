@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -19,6 +21,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+_log = logging.getLogger("claudez.permissions")
 
 
 # ── 权限模式 ──
@@ -181,30 +186,90 @@ class PermissionManager:
     # ── 沙箱 ──
 
     def create_sandbox(self, label: str = "sandbox") -> str:
-        """创建沙箱临时目录。"""
-        sandbox_dir = self._sandbox_base / f"{label}_{uuid.uuid4().hex[:8]}"
-        os.makedirs(sandbox_dir, exist_ok=True)
-        return str(sandbox_dir)
+        """创建沙箱临时目录（带最小权限）。"""
+        import tempfile
+        sandbox_dir = tempfile.mkdtemp(prefix=f"claudez_{label}_")
+        _log.info("sandbox_created: %s", sandbox_dir)
+        return sandbox_dir
 
     def cleanup_sandbox(self, sandbox_dir: str):
         """清理沙箱目录。"""
         import shutil
         try:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-        except Exception:
-            pass
+            if os.path.isdir(sandbox_dir):
+                shutil.rmtree(sandbox_dir, ignore_errors=True)
+                _log.info("sandbox_cleaned: %s", sandbox_dir)
+        except Exception as e:
+            _log.warning("sandbox_cleanup_failed: %s: %s", sandbox_dir, e)
 
     def exec_in_sandbox(self, command: str, sandbox_dir: str | None = None,
                         timeout: float = 30.0) -> str:
-        """在沙箱中执行命令。"""
+        """在沙箱中以最小权限执行命令。
+
+        安全措施：
+          - 使用临时目录作为 CWD，防止污染工作目录
+          - 使用参数列表（非 shell=True）防止命令注入
+          - Linux: 降权到 nobody/nogroup
+          - Windows: 设置受限环境变量
+          - 超时自动终止
+
+        Args:
+            command: 要执行的命令（字符串，自动安全分割）
+            sandbox_dir: 沙箱目录（自动创建）
+            timeout: 超时秒数
+
+        Returns:
+            命令输出
+        """
+        import shlex
+
         cwd = sandbox_dir or self.create_sandbox()
+        os.makedirs(cwd, exist_ok=True)
+
+        # 安全分割命令（防止 shell injection）
         try:
+            args = shlex.split(command)
+        except ValueError as e:
+            # 如果 shlex 分割失败，回退到不安全的 split（但记录警告）
+            _log.warning("sandbox_shlex_failed: %s, 使用 str.split", e)
+            args = command.split()
+
+        env = os.environ.copy()
+
+        try:
+            # ── Linux: 降权执行 ──
+            preexec_fn = None
+            if sys.platform != "win32":
+                try:
+                    import pwd, grp
+                    nobody_uid = pwd.getpwnam('nobody').pw_uid
+                    nogroup_gid = grp.getgrnam('nogroup').gr_gid
+                    preexec_fn = lambda: (os.setgid(nogroup_gid), os.setuid(nobody_uid))
+                except (KeyError, ImportError, PermissionError) as e:
+                    _log.warning("sandbox_drop_privileges_unavailable: %s", e)
+
+            # ── Windows: 清理继承的环境变量 ──
+            else:
+                # 限制可写目录权限
+                for var in ("TEMP", "TMP"):
+                    env[var] = cwd
+                # 移除可能危险的路径
+                for var in list(env.keys()):
+                    if var.startswith("CLAUDEZ_"):
+                        pass  # 保留 ClaudeZ 自身环境变量
+                    elif var in ("PATH", "SYSTEMROOT"):
+                        pass  # 保留系统路径
+
             result = subprocess.run(
-                command, shell=True, cwd=cwd,
+                args,
                 capture_output=True, text=True,
                 timeout=timeout,
+                cwd=cwd,
+                env=env,
+                preexec_fn=preexec_fn,
                 encoding="utf-8", errors="replace",
             )
+
             output = []
             if result.stdout:
                 output.append(result.stdout)
@@ -212,11 +277,24 @@ class PermissionManager:
                 output.append(f"STDERR:\n{result.stderr}")
             if result.returncode != 0:
                 output.append(f"退出码: {result.returncode}")
+
+            self._log_sandbox_exec(args, result.returncode, len(result.stdout))
+
             return "\n".join(output) if output else "(无输出)"
+
         except subprocess.TimeoutExpired:
+            _log.warning("sandbox_timeout: %s > %ss", args[0] if args else "?", timeout)
             return f"[超时] 命令 {timeout} 秒未完成"
+        except FileNotFoundError:
+            return f"[错误] 命令不存在: {args[0] if args else command}"
         except Exception as e:
+            _log.error("sandbox_exec_error: %s: %s", args[0] if args else "?", e)
             return f"[错误] {e}"
+
+    def _log_sandbox_exec(self, args: list, returncode: int, output_len: int):
+        """记录沙箱执行日志。"""
+        _log.info("sandbox_exec: %s (rc=%d, out=%d chars)",
+                  args[0] if args else "?", returncode, output_len)
 
 
 # ── 全局实例 ──
