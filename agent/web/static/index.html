@@ -459,6 +459,7 @@ let totalTokens = 0;
 let startTime = 0;
 let curPlanSteps = [];
 let streamingTimer = null;  // safety timeout
+const _messages = [];       // 消息统一队列 [{role, text, ts}]
 
 // ── DOM ──
 const msgs = document.getElementById('msgs');
@@ -574,71 +575,144 @@ function stopStream() {
   finishMsg('[已中断]'); inputHint.textContent = '已中断';
 }
 
-// ── 消息 ──
+// ── 消息 (统一队列 + 时间戳排序) ──
+function renderAll() {
+  // 清空容器，按时间戳升序重建
+  msgs.innerHTML = '';
+  const sorted = _messages.slice().sort(function(a, b) { return a.ts - b.ts; });
+  for (var i = 0; i < sorted.length; i++) {
+    var m = sorted[i];
+    var d = document.createElement('div'); d.className = 'msg ' + m.role;
+    var ts = new Date(m.ts).toLocaleTimeString();
+    d.innerHTML = '<div class="bubble">' + escHtml(m.text) + '</div><div class="meta">' + ts + '</div>';
+    msgs.appendChild(d);
+  }
+  scrollBtm();
+}
+
 function addMsg(role, text) {
-  const d = document.createElement('div'); d.className = 'msg ' + role;
-  const ts = new Date().toLocaleTimeString();
+  var now = Date.now();
+  _messages.push({role: role, text: text, ts: now});
+  var d = document.createElement('div'); d.className = 'msg ' + role;
+  var ts = new Date(now).toLocaleTimeString();
   d.innerHTML = '<div class="bubble">' + escHtml(text) + '</div><div class="meta">' + ts + '</div>';
   msgs.appendChild(d); scrollBtm();
-  if (role === 'user') saveMsg(role, text);
+  if (role === 'user') { saveLocal(); }
 }
+
 function curMsg() {
-  let el = document.getElementById('curMsg');
+  var el = document.getElementById('curMsg');
   if (!el) {
-    const d = document.createElement('div'); d.className = 'msg agent'; d.id = 'curMsg';
-    const ts = new Date().toLocaleTimeString();
-    d.innerHTML = '<div class="bubble" id="curBubble"><span id="curText"></span><span class="cursor"></span></div><div class="meta">' + ts + '</div>';
-    msgs.appendChild(d); el = d; scrollBtm();
+    // 当前正在回复的消息：先存入队列再渲染
+    var now = Date.now();
+    _messages.push({role: 'agent', text: '', ts: now, _streaming: true});
+    renderAll();
+    // 重建后重新获取 cursor 元素
+    ensureCursor();
+    el = document.getElementById('curMsg');
   }
   return document.getElementById('curText');
 }
-function appendToken(text) {
-  const el = curMsg(); curText += text; el.textContent = curText; scrollBtm();
-}
-function finishMsg(text) {
-  const el = document.getElementById('curText');
-  if (el) { el.textContent = text || curText; el.parentElement.querySelector('.cursor')?.remove(); }
-  const c = document.getElementById('curMsg');
-  if (c) { c.removeAttribute('id'); saveMsg('agent', text || curText); }
-}
-function addToolBadge(name, status) {
-  const b = document.getElementById('curBubble');
-  if (!b) return;
-  const cls = status === 'ok' ? 'tool-badge ok' : status === 'err' ? 'tool-badge err' : 'tool-badge run';
-  const label = status === 'run' ? '⟳' : status === 'ok' ? '✓' : '✗';
-  const span = document.createElement('span'); span.className = cls; span.textContent = label + ' ' + name;
-  b.appendChild(span);
-}
-function clearChat() {
-  if (!confirm('确定清空所有对话？')) return;
-  msgs.innerHTML = '<div class="msg agent"><div class="bubble">对话已清空。</div></div>';
-  localStorage.removeItem('forgex-chat');
-  const el = document.getElementById('curMsg'); if (el) el.remove();
-  curText = '';
+
+function ensureCursor() {
+  var e = document.getElementById('curMsg');
+  if (e) return;
+  // 在渲染的消息中找到最后一条 agent 消息，设为流式容器
+  var ms = msgs.querySelectorAll('.msg.agent');
+  if (ms.length > 0) {
+    var last = ms[ms.length - 1];
+    last.id = 'curMsg';
+    var bubble = last.querySelector('.bubble');
+    if (bubble) {
+      bubble.id = 'curBubble';
+      var txt = bubble.querySelector('span');
+      if (!txt) {
+        var s = document.createElement('span'); s.id = 'curText'; s.textContent = '';
+        bubble.insertBefore(s, bubble.firstChild);
+      }
+      var cursor = document.createElement('span'); cursor.className = 'cursor';
+      bubble.appendChild(cursor);
+    }
+  }
 }
 
-// ── localStorage 持久化 ──
-function saveMsg(role, text) {
+function appendToken(text) {
+  var el = curMsg();
+  if (!el) return;
+  curText += text; el.textContent = curText;
+  // 更新队列中的消息内容
+  for (var i = _messages.length - 1; i >= 0; i--) {
+    if (_messages[i]._streaming) { _messages[i].text = curText; break; }
+  }
+  scrollBtm();
+}
+
+function finishMsg(text) {
+  if (streamingTimer) clearTimeout(streamingTimer);
+  var el = document.getElementById('curText');
+  if (el) {
+    var displayText = text || curText;
+    el.textContent = displayText;
+    var cursor = el.parentElement ? el.parentElement.querySelector('.cursor') : null;
+    if (cursor) cursor.remove();
+  }
+  var c = document.getElementById('curMsg');
+  if (c) {
+    c.removeAttribute('id');
+    var bubble = c.querySelector('#curBubble');
+    if (bubble) bubble.removeAttribute('id');
+    // 更新队列：标记流式结束
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      if (_messages[i]._streaming) {
+        _messages[i].text = text || curText;
+        _messages[i]._streaming = false;
+        break;
+      }
+    }
+    saveLocal();
+  }
+}
+
+function addToolBadge(name, status) {
+  var b = document.getElementById('curBubble');
+  if (!b) return;
+  var cls = status === 'ok' ? 'tool-badge ok' : status === 'err' ? 'tool-badge err' : 'tool-badge run';
+  var label = status === 'run' ? '>' : status === 'ok' ? 'OK' : 'ERR';
+  var span = document.createElement('span'); span.className = cls; span.textContent = label + ' ' + name;
+  b.appendChild(span);
+}
+
+function saveLocal() {
   try {
-    let h = JSON.parse(localStorage.getItem('forgex-chat') || '[]');
-    h.push({role, text, ts: Date.now()});
-    if (h.length > 200) h = h.slice(-200);
-    localStorage.setItem('forgex-chat', JSON.stringify(h));
+    var arr = [];
+    for (var i = 0; i < _messages.length; i++) {
+      if (!_messages[i]._streaming) {
+        arr.push({role: _messages[i].role, text: _messages[i].text, ts: _messages[i].ts});
+      }
+    }
+    if (arr.length > 200) arr = arr.slice(-200);
+    localStorage.setItem('forgex-chat', JSON.stringify(arr));
   } catch(_) {}
 }
+
 function loadChat() {
   try {
-    const h = JSON.parse(localStorage.getItem('forgex-chat') || '[]');
+    var h = JSON.parse(localStorage.getItem('forgex-chat') || '[]');
     if (h.length === 0) return;
-    msgs.innerHTML = '';
-    h.forEach(m => {
-      const d = document.createElement('div'); d.className = 'msg ' + m.role;
-      const ts = new Date(m.ts).toLocaleTimeString();
-      d.innerHTML = '<div class="bubble">' + escHtml(m.text) + '</div><div class="meta">' + ts + '</div>';
-      msgs.appendChild(d);
-    });
-    scrollBtm();
+    for (var i = 0; i < h.length; i++) {
+      _messages.push({role: h[i].role, text: h[i].text, ts: h[i].ts || Date.now()});
+    }
+    renderAll();
   } catch(_) {}
+}
+
+function clearChat() {
+  if (!confirm('确定清空所有对话？')) return;
+  _messages.length = 0;
+  localStorage.removeItem('forgex-chat');
+  var el = document.getElementById('curMsg'); if (el) el.remove();
+  curText = '';
+  msgs.innerHTML = '<div class="msg agent"><div class="bubble">对话已清空。</div></div>';
 }
 
 // ── 仪表板 ──
