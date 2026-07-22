@@ -202,6 +202,40 @@ body {
   font-size: 10px; color: var(--text3); margin-left: 4px;
 }
 
+/* ── 工具调用卡片（持久化，可复制） ── */
+.tc {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px; margin: 4px 0;
+  font-family: 'SF Mono','Fira Code',monospace;
+}
+.tc-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.tc-icon { flex-shrink: 0; }
+.tc-name { font-weight: 600; color: var(--accent2); }
+.tc-ts { color: var(--text3); font-size: 10px; margin-left: auto; }
+.tc-status { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.tc-status.run { color: var(--yellow); background: rgba(234,179,8,0.1); }
+.tc-status.done { color: var(--green); background: rgba(34,197,94,0.1); }
+.tc-status.fail { color: var(--red); background: rgba(239,68,68,0.1); }
+.tc-args { padding: 4px 8px; background: var(--surface3); font-size: 11px; border-bottom: 1px solid var(--border); }
+.tc-arg { padding: 1px 0; color: var(--text2); }
+.tc-argk { color: var(--text3); }
+.tc-argv { color: var(--text); }
+.tc-body { display: none; padding: 4px 8px; max-height: 300px; overflow-y: auto; font-size: 11px; line-height: 1.45; }
+.tc-body::-webkit-scrollbar { width: 3px; }
+.tc-line { padding: 0; white-space: pre-wrap; word-break: break-all; color: var(--text2); }
+.tc-line:nth-child(even) { background: rgba(255,255,255,0.015); }
+.tc-result-text {
+  padding: 4px 0; white-space: pre-wrap; word-break: break-all;
+  color: var(--text); border-top: 1px solid var(--border); margin-top: 4px;
+}
+.tc-foot { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-top: 1px solid var(--border); font-size: 10px; }
+.tc-result { color: var(--text3); }
+.tc-dur { color: var(--text3); margin-left: auto; }
+
 /* ── 工作空间 ── */
 .ws-btn {
   background: var(--surface2); border: 1px solid var(--border);
@@ -643,14 +677,19 @@ function connectSSE() {
     // 前端已在 send() 中乐观添加，此处忽略避免重复
   });
   evtSrc.addEventListener('tool_start', e => {
-    const d = JSON.parse(e.data); addToolBadge(d.name, 'run');
+    var d = JSON.parse(e.data);
+    addToolCard(d.name, d.args || {});
     statusDot.className = 'dot busy'; log('i', '工具: ' + d.name);
   });
+  evtSrc.addEventListener('tool_output', e => {
+    var d = JSON.parse(e.data);
+    appendToolOutput(d.name, d.line);
+  });
   evtSrc.addEventListener('tool_result', e => {
-    const d = JSON.parse(e.data);
-    addToolBadge(d.name, d.success ? 'ok' : 'err');
+    var d = JSON.parse(e.data);
+    finishToolCard(d.name, d.result, d.success, d.duration_ms || 0);
     statusDot.className = 'dot';
-    log(d.success ? 'i' : 'w', (d.success ? '✓' : '✗') + ' ' + d.name + ' (' + d.duration_ms.toFixed(0) + 'ms)');
+    log(d.success ? 'i' : 'w', (d.success ? '✓' : '✗') + ' ' + d.name + ' (' + (d.duration_ms||0).toFixed(0) + 'ms)');
   });
   evtSrc.addEventListener('status_update', e => { updateDash(JSON.parse(e.data)); });
 
@@ -841,13 +880,84 @@ function finishMsg(text) {
   }
 }
 
-function addToolBadge(name, status) {
-  var b = document.getElementById('curBubble');
-  if (!b) return;
-  var cls = status === 'ok' ? 'tool-badge ok' : status === 'err' ? 'tool-badge err' : 'tool-badge run';
-  var label = status === 'run' ? '>' : status === 'ok' ? 'OK' : 'ERR';
-  var span = document.createElement('span'); span.className = cls; span.textContent = label + ' ' + name;
-  b.appendChild(span);
+// ── 工具调用卡片（持久化，可复制） ──
+var _activeToolCards = {};
+var _activeToolId = 0;
+
+function addToolCard(name, args) {
+  var ts = new Date().toLocaleTimeString();
+  // 参数摘要
+  var argStr = '';
+  if (args) {
+    var keys = Object.keys(args);
+    for (var i = 0; i < keys.length; i++) {
+      var val = args[keys[i]];
+      if (typeof val === 'string' && val.length > 80) val = val.slice(0, 80) + '...';
+      argStr += '<div class="tc-arg"><span class="tc-argk">' + escHtml(keys[i]) + '</span>: <span class="tc-argv">' + escHtml(JSON.stringify(val)) + '</span></div>';
+    }
+  }
+  var card = document.createElement('div');
+  var cid = Date.now();
+  card.className = 'msg agent';
+  card.id = 'tc-' + cid;
+  card.innerHTML = '<div class="tc" data-tool="' + escHtml(name) + '">'
+    + '<div class="tc-hd">'
+    + '<span class="tc-icon">🔧</span>'
+    + '<span class="tc-name">' + escHtml(name) + '</span>'
+    + '<span class="tc-ts">' + ts + '</span>'
+    + '<span class="tc-status run">⏳ 执行中...</span>'
+    + '</div>'
+    + (argStr ? '<div class="tc-args">' + argStr + '</div>' : '')
+    + '<div class="tc-body"></div>'
+    + '<div class="tc-foot"><span class="tc-result"></span><span class="tc-dur"></span></div>'
+    + '</div>';
+  msgs.appendChild(card);
+  scrollBtm();
+  _activeToolCards[cid] = card;
+  _activeToolId = cid;
+}
+
+function appendToolOutput(name, line) {
+  var card = _activeToolCards[_activeToolId];
+  if (!card) return;
+  var body = card.querySelector('.tc-body');
+  if (!body) return;
+  body.style.display = 'block';
+  var lineDiv = document.createElement('div');
+  lineDiv.className = 'tc-line';
+  lineDiv.textContent = line;
+  body.appendChild(lineDiv);
+  while (body.children.length > 500) body.removeChild(body.firstChild);
+  scrollBtm();
+}
+
+function finishToolCard(name, resultText, success, durationMs) {
+  var card = _activeToolCards[_activeToolId];
+  if (!card) return;
+  delete _activeToolCards[_activeToolId];
+  var statusEl = card.querySelector('.tc-status');
+  if (statusEl) {
+    statusEl.textContent = success ? '✅ 完成' : '❌ 失败';
+    statusEl.className = 'tc-status ' + (success ? 'done' : 'fail');
+  }
+  var durEl = card.querySelector('.tc-dur');
+  if (durEl) durEl.textContent = durationMs ? ' (' + durationMs.toFixed(0) + 'ms)' : '';
+  // Append result text to body
+  if (resultText && resultText.length > 0) {
+    var body = card.querySelector('.tc-body');
+    if (!body) return;
+    // Only show result if it's not already shown as output
+    var hasContent = body.children.length > 0;
+    var resultPreview = resultText;
+    if (resultPreview.length > 2000) resultPreview = resultPreview.slice(0, 2000) + '\n... (截断)';
+    if (!hasContent || resultText.length > 80) {
+      var pre = document.createElement('div');
+      pre.className = 'tc-result-text';
+      pre.textContent = resultPreview;
+      body.appendChild(pre);
+    }
+  }
+  scrollBtm();
 }
 
 // ── 工作流渲染器 ──

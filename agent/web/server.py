@@ -149,9 +149,18 @@ def _build_app(agent) -> FastAPI:
                     if _orig_on_stream:
                         _orig_on_stream(chunk)
 
+                # 工具调用序列号（唯一标识一次调用）
+                _tool_seq = [0]
+
                 def _on_tool_start(name, args):
-                    T("SRV-CB", f"on_tool_start name={name}")
-                    _broadcast("tool_start", {"name": name, "args": args})
+                    _tool_seq[0] += 1
+                    tid = int(time.time() * 1000) + _tool_seq[0]
+                    T("SRV-CB", f"on_tool_start name={name} tid={tid}")
+                    _broadcast("tool_start", {
+                        "tool_id": tid,
+                        "name": name, "args": args,
+                        "time": time.time(),
+                    })
                     _broadcast("status_update", _read_status(agent))
                     if name in ("write", "edit"):
                         fp = args.get("file_path", "")
@@ -160,11 +169,21 @@ def _build_app(agent) -> FastAPI:
                     if _orig_on_tool_start:
                         _orig_on_tool_start(name, args)
 
+                def _on_tool_output(name, line):
+                    _broadcast("tool_output", {
+                        "tool_id": _tool_seq[0],
+                        "name": name, "line": line,
+                    })
+
                 def _on_tool_call(name, args, result, duration):
                     success = not (result.startswith("[错误]") or result.startswith("[超时]") or result.startswith("[权限拒绝]"))
                     T("SRV-CB", f"on_tool_call name={name} success={success}")
                     _broadcast("tool_result", {
-                        "name": name, "duration_ms": duration,
+                        "tool_id": _tool_seq[0],
+                        "name": name,
+                        "args": args,
+                        "result": str(result),
+                        "duration_ms": duration,
                         "success": success,
                     })
                     if name in ("write", "edit") and success:
@@ -192,6 +211,7 @@ def _build_app(agent) -> FastAPI:
                 agent.on_stream = _on_stream
                 agent.on_tool_start = _on_tool_start
                 agent.on_tool_call = _on_tool_call
+                agent.on_tool_output = _on_tool_output
                 agent.on_message = _on_message
                 T("SRV-RUN", "callbacks mounted, calling agent.run()")
 
