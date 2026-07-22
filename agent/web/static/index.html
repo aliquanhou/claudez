@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ForgeX Web UI</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --primary: #e94560;
+    --text: #e0e0e0;
+    --text2: #a0a0b0;
+    --border: #2a2a4a;
+    --user-bg: #0f3460;
+    --agent-bg: #1a1a3e;
+    --intent-color: #e94560;
+    --phase-color: #4fc3f7;
+    --pass-color: #66bb6a;
+    --warn-color: #ffa726;
+    --fail-color: #ef5350;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    display: flex;
+    height: 100vh;
+  }
+
+  /* ── Top bar ── */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0;
+    height: 48px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 20px;
+    z-index: 100;
+  }
+  .topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.5px; }
+  .topbar h1 span { color: var(--primary); }
+  .topbar .badge {
+    margin-left: 12px;
+    font-size: 11px; padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--surface2);
+    color: var(--text2);
+  }
+  .topbar .badge.green { background: #1b5e20; color: #a5d6a7; }
+
+  /* ── Left panel: chat ── */
+  .chat-panel {
+    flex: 1;
+    display: flex; flex-direction: column;
+    margin-top: 48px;
+    min-width: 0;
+  }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+
+  .msg { margin-bottom: 16px; max-width: 85%; }
+
+  .msg.user { margin-left: auto; }
+  .msg.agent { margin-right: auto; }
+
+  .msg .bubble {
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .msg.user .bubble {
+    background: var(--user-bg);
+    border-bottom-right-radius: 2px;
+  }
+
+  .msg.agent .bubble {
+    background: var(--agent-bg);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 2px;
+  }
+
+  .msg .meta {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+    padding: 0 4px;
+  }
+
+  /* ── Input area ── */
+  .input-area {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; gap: 8px;
+  }
+
+  .input-area textarea {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+    min-height: 42px;
+    max-height: 120px;
+    line-height: 1.4;
+  }
+  .input-area textarea:focus { border-color: var(--primary); }
+
+  .input-area button {
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0 20px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .input-area button:hover { opacity: 0.85; }
+  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Right panel: status ── */
+  .status-panel {
+    width: 320px;
+    margin-top: 48px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+    flex-shrink: 0;
+  }
+
+  .status-panel .section {
+    margin-bottom: 20px;
+  }
+
+  .status-panel .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text2);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .status-item {
+    display: flex; justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .status-item:last-child { border-bottom: none; }
+
+  .status-item .label { color: var(--text2); }
+  .status-item .value { color: var(--text); font-weight: 500; }
+
+  .status-item .value.intent { color: var(--intent-color); }
+  .status-item .value.phase { color: var(--phase-color); }
+  .status-item .value.pass { color: var(--pass-color); }
+  .status-item .value.warn { color: var(--warn-color); }
+  .status-item .value.fail { color: var(--fail-color); }
+
+  .decision-list {
+    font-size: 12px;
+    list-style: none;
+  }
+  .decision-list li {
+    padding: 4px 0;
+    color: var(--text2);
+    border-bottom: 1px solid var(--border);
+  }
+  .decision-list li:last-child { border-bottom: none; }
+  .decision-list .desc { color: var(--text); }
+
+  /* ── Loading ── */
+  .loading {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: var(--primary);
+    border-radius: 50%;
+    animation: pulse 0.8s infinite;
+    margin-left: 4px;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .status-panel { display: none; }
+    .msg { max-width: 95%; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1><span>Forge</span>X</h1>
+  <span class="badge green">v0.4.0</span>
+  <span class="badge" id="cogBadge">cog: ?</span>
+  <span class="badge" id="execBadge">exec: ?</span>
+  <span class="badge" id="statusBadge">idle</span>
+</div>
+
+<div class="app">
+
+  <!-- Chat panel -->
+  <div class="chat-panel">
+    <div class="messages" id="messages">
+      <div class="msg agent">
+        <div class="bubble">ForgeX v0.4.0 ready. 输入消息开始对话。</div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <textarea id="input" rows="1" placeholder="输入消息..."
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
+      <button id="sendBtn" onclick="send()">发送</button>
+    </div>
+  </div>
+
+  <!-- Status panel -->
+  <div class="status-panel" id="statusPanel">
+    <div class="section">
+      <div class="section-title">Cognition</div>
+      <div class="status-item"><span class="label">Intent</span><span class="value intent" id="sIntent">—</span></div>
+      <div class="status-item"><span class="label">Phase</span><span class="value phase" id="sPhase">—</span></div>
+      <div class="status-item"><span class="label">Turn</span><span class="value" id="sTurn">0</span></div>
+      <div class="status-item"><span class="label">Decisions</span><span class="value" id="sDecCount">0</span></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Task</div>
+      <div class="status-item"><span class="label">Goal</span><span class="value" id="sGoal">—</span></div>
+      <div class="status-item"><span class="label">Files</span><span class="value" id="sFiles">0</span></div>
+      <div class="status-item"><span class="label">Project</span><span class="value" id="sProject">—</span></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Recent Decisions</div>
+      <ul class="decision-list" id="sDecisions">
+        <li style="color:var(--text2);font-size:12px">(none)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const messages = document.getElementById('messages');
+const statusBadge = document.getElementById('statusBadge');
+
+// ── Helpers ──
+function escapeHtml(text) {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return d.innerHTML;
+}
+
+function scrollBottom() {
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = '<div class="bubble">' + escapeHtml(text) + '</div>'
+    + '<div class="meta">' + role + ' @ ' + new Date().toLocaleTimeString() + '</div>';
+  messages.appendChild(div);
+  scrollBottom();
+}
+
+function addLoading() {
+  const div = document.createElement('div');
+  div.className = 'msg agent';
+  div.id = 'loadingMsg';
+  div.innerHTML = '<div class="bubble"><span class="loading"></span> 思考中...</div>';
+  messages.appendChild(div);
+  scrollBottom();
+}
+
+function removeLoading() {
+  const el = document.getElementById('loadingMsg');
+  if (el) el.remove();
+}
+
+// ── Send ──
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
+  statusBadge.textContent = 'running';
+
+  addMsg('user', text);
+  addLoading();
+
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text}),
+    });
+    const data = await resp.json();
+    removeLoading();
+    addMsg('agent', data.response || '(empty)');
+    updateStatus(data);
+  } catch (err) {
+    removeLoading();
+    addMsg('agent', '[网络错误] ' + err.message);
+  }
+
+  sendBtn.disabled = false;
+  statusBadge.textContent = 'idle';
+  input.focus();
+}
+
+function updateStatus(data) {
+  setText('sIntent', data.intent || '—');
+  setText('sPhase', data.phase || '—');
+  setText('sTurn', String(data.turn_count ?? 0));
+  setText('sDecCount', String(data.decisions ?? 0));
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+// ── Poll status ──
+async function pollStatus() {
+  try {
+    const resp = await fetch('/status');
+    const s = await resp.json();
+
+    setText('sIntent', s.intent || '—');
+    setText('sPhase', s.phase || '—');
+    setText('sTurn', String(s.turn_count ?? 0));
+    setText('sDecCount', String(s.decisions_count ?? 0));
+    setText('sGoal', (s.goal || '—').slice(0, 80));
+    setText('sFiles', String(s.workspace_files ?? 0));
+    setText('sProject', s.project_type || '—');
+
+    document.getElementById('cogBadge').textContent = 'cog: ' + (s.cognition ? 'ON' : 'OFF');
+    document.getElementById('execBadge').textContent = 'exec: ' + (s.execution ? 'ON' : 'OFF');
+
+    // Decisions list
+    const list = document.getElementById('sDecisions');
+    if (s.decisions && s.decisions.length > 0) {
+      list.innerHTML = s.decisions.slice(-5).reverse().map(d =>
+        '<li><span class="desc">' + escapeHtml(d.description) + '</span></li>'
+      ).join('');
+    }
+  } catch (_) {}
+}
+
+// ── Auto-resize textarea ──
+input.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// ── Init ──
+pollStatus();
+setInterval(pollStatus, 2000);
+input.focus();
+</script>
+</body>
+</html>
