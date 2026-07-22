@@ -363,9 +363,18 @@ class Agent:
                     cid = tc.get("id", "")
                     self._call_history.append((name, json.dumps(args, sort_keys=True)))
                     self.stats["tool_calls"] += 1
+                    # v0.4.0: PathValidator
+                    if _HAS_EXECUTION:
+                        safe, reason = self._validate_tool_path(name, args)
+                        if not safe:
+                            tool_tasks.append((name, args, cid,
+                                "[权限拒绝] 路径安全校验失败: " + reason))
+                            if self.on_tool_start:
+                                self.on_tool_start(name, args)
+                            continue
                     allowed, reason = check_permission(name)
                     if not allowed:
-                        tool_tasks.append((name, args, cid, f"[权限拒绝] {reason}"))
+                        tool_tasks.append((name, args, cid, "[权限拒绝] " + reason))
                         continue
                     if self.on_tool_start:
                         self.on_tool_start(name, args)
@@ -422,6 +431,13 @@ class Agent:
                             break
                     else:
                         self._consecutive_errors = 0
+
+                # v0.4.0: FeedbackLoop
+                if _HAS_EXECUTION and self.feedback_loop is not None:
+                    try:
+                        self._run_feedback_loop(results)
+                    except Exception as fb_err:
+                        _log.debug("feedback_loop error: %s", fb_err)
 
                 if not self._running:
                     break
@@ -580,6 +596,49 @@ class Agent:
             "max_tool_calls": self.config["max_tool_calls_per_turn"],
             "tool_timeout": self.config["tool_timeout"],
         }
+
+    # -- Execution layer helpers (v0.4.0) --
+
+    def _validate_tool_path(self, tool_name: str, args: dict) -> tuple[bool, str]:
+        if self.path_validator is None:
+            return True, ""
+        if tool_name in ("write", "edit", "delete", "read"):
+            fp = args.get("file_path", "")
+            if fp:
+                return self.path_validator.validate(fp)
+        return True, ""
+
+    def _run_feedback_loop(self, tool_results: list) -> None:
+        if self.feedback_loop is None or self.task_manager is None:
+            return
+        if not _HAS_COGNITION:
+            return
+        after_info = None
+        if self.workspace_scanner is not None:
+            try:
+                after_info = self.workspace_scanner.get_info()
+            except Exception:
+                pass
+        from .cognition.plan_verifier import Plan as PVPlan, PlanStep
+        task = self.task_manager.get_current_task()
+        if not task:
+            return
+        plan = PVPlan(
+            id="exec-" + str(self._tool_round),
+            description=task.user_goal[:100],
+            steps=[PlanStep(action="execute", file="", description=task.user_goal[:100])],
+            target_files=[],
+            estimated_effort=0,
+        )
+        logs = [r[3] for r in tool_results if r[3]]
+        from .cognition.execution_verifier import WorkspaceSnapshot as EVSnap
+        before_ws = EVSnap(root_path=".")
+        after_ws = EVSnap(
+            root_path=".",
+            files=after_info.files if after_info else [],
+            file_count=after_info.file_count if after_info else 0,
+        )
+        self.feedback_loop.process(plan, before_ws, after_ws, logs)
 
     def _search_memories(self) -> list[dict]:
         if not self.semantic_memory:
