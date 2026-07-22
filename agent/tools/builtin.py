@@ -14,6 +14,20 @@ from pathlib import Path
 from .registry import tool
 
 
+def _resolve_path(file_path: str) -> str:
+    """将相对路径解析为基于工作空间根目录的绝对路径。"""
+    if os.path.isabs(file_path):
+        return file_path
+    try:
+        from .registry import get_registry
+        wd = get_registry()._context.working_dir
+        if wd:
+            return os.path.join(wd, file_path)
+    except Exception:
+        pass
+    return file_path
+
+
 # ═══════════════════════════════════════════
 # 文件操作
 # ═══════════════════════════════════════════
@@ -23,10 +37,11 @@ def read(file_path: str, head: int = 0, tail: int = 0) -> str:
     """读取文件内容。
 
     Args:
-        file_path: 文件路径
+        file_path: 文件路径（相对路径基于工作空间根目录）
         head: 只读取前 N 行（0 = 全部）
         tail: 只读取后 N 行（0 = 全部）
     """
+    file_path = _resolve_path(file_path)
     if not os.path.exists(file_path):
         return f"[错误] 文件不存在: {file_path}"
 
@@ -56,10 +71,11 @@ def write(file_path: str, content: str) -> str:
     """写入文件（自动创建目录，逐行流式推送）。
 
     Args:
-        file_path: 文件路径
+        file_path: 文件路径（相对路径基于工作空间根目录）
         content: 文件内容
     """
     import time as _time
+    file_path = _resolve_path(file_path)
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -94,10 +110,11 @@ def edit(file_path: str, old_string: str, new_string: str) -> str:
     """编辑文件（替换文本，带 diff 预览）。
 
     Args:
-        file_path: 文件路径
+        file_path: 文件路径（相对路径基于工作空间根目录）
         old_string: 要替换的旧文本
         new_string: 新文本
     """
+    file_path = _resolve_path(file_path)
     if not os.path.exists(file_path):
         return f"[错误] 文件不存在: {file_path}"
 
@@ -140,13 +157,14 @@ def edit(file_path: str, old_string: str, new_string: str) -> str:
 
 @tool(category="file", timeout=30, is_readonly=True, is_concurrency_safe=True)
 def glob(pattern: str) -> str:
-    """搜索文件（通配符模式）。
+    """搜索文件（通配符模式，工作空间根目录为基准）。
 
     Args:
         pattern: 通配符模式，如 **/*.py
     """
     import glob as glob_module
-    matches = glob_module.glob(pattern, recursive=True)
+    search_path = _resolve_path(pattern)
+    matches = glob_module.glob(search_path, recursive=True)
     if not matches:
         return "(无匹配)"
     return "\n".join(sorted(matches)[:100])
@@ -158,10 +176,11 @@ def grep(pattern: str, path: str = ".", glob_pattern: str = "*.py") -> str:
 
     Args:
         pattern: 搜索模式（正则表达式）
-        path: 搜索路径
+        path: 搜索路径（相对路径基于工作空间根目录）
         glob_pattern: 文件匹配模式
     """
     import re
+    path = _resolve_path(path)
     matches = []
     for f in Path(path).rglob(glob_pattern):
         if not f.is_file():
