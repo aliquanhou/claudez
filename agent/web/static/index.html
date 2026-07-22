@@ -406,10 +406,29 @@ body {
     <div class="sec-title">🔧 工具</div>
     <div id="toolList"><div class="tool-item"><span class="dot"></span>加载中...</div></div>
   </div>
-  <div class="sec">
+  <div class="sec" id="llmConfigSec">
     <div class="sec-title">⚙️ LLM 配置</div>
-    <div class="cfg-row"><span>模型</span><span class="v" id="llmModel">—</span></div>
-    <div class="cfg-row"><span>Tokens</span><span class="v" id="llmTokens">0</span></div>
+    <div class="cfg-row" style="flex-direction:column;gap:2px;">
+      <label style="font-size:10px;color:var(--text3);">模型</label>
+      <select id="cfgModel" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:2px 4px;font-size:11px;outline:none;cursor:pointer;">
+        <option value="deepseek-chat">DeepSeek Chat</option>
+        <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+        <option value="gpt-4">GPT-4</option>
+        <option value="gpt-4o">GPT-4o</option>
+      </select>
+    </div>
+    <div class="cfg-row" style="flex-direction:column;gap:1px;">
+      <label style="font-size:10px;color:var(--text3);">温度 <span id="cfgTempVal" style="float:right;">0.0</span></label>
+      <input type="range" id="cfgTemp" min="0" max="2" step="0.1" value="0.0" style="width:100%;accent-color:var(--accent);cursor:pointer;">
+    </div>
+    <div class="cfg-row">
+      <span style="font-size:10px;color:var(--text3);">Max Tokens</span>
+      <input type="number" id="cfgMaxTokens" value="8192" min="512" max="65536" step="512" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:1px 4px;font-size:11px;text-align:right;">
+    </div>
+    <div class="cfg-row" style="display:flex;gap:4px;margin-top:4px;">
+      <button id="cfgApplyBtn" style="flex:1;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:3px 0;font-size:11px;cursor:pointer;font-weight:600;" onclick="applyLLMConfig()">应用</button>
+      <span id="cfgStatus" style="font-size:10px;color:var(--text3);align-self:center;"></span>
+    </div>
   </div>
   <div class="sec">
     <div class="sec-title">📋 任务</div>
@@ -639,10 +658,14 @@ function send() {
   .catch(function() { finishMsg('[网络错误] 无法连接到服务器'); streaming=false; isSending=false; sendBtn.disabled=false; stopBtn.disabled=true; inp.disabled=false; });
 }
 
-function stopStream() {
+async function stopStream() {
+  // v0.5: 调用后端停止
   streaming = false; isSending = false; sendBtn.disabled = false; stopBtn.disabled = true;
   inp.disabled = false; statusDot.className = 'dot';
   finishMsg('[已中断]'); inputHint.textContent = '已中断';
+  try {
+    await fetch('/api/stop', { method:'POST' });
+  } catch(_) {}
 }
 
 // ── 消息 (统一队列 + 时间戳排序) ──
@@ -1066,9 +1089,65 @@ function insertAtCursor(text) {
   inp.dispatchEvent(new Event('input'));
 }
 
+// ── LLM 配置 (v0.5) ──
+
+// 温度滑块联动
+document.addEventListener('DOMContentLoaded', function() {
+  var slider = document.getElementById('cfgTemp');
+  var valSpan = document.getElementById('cfgTempVal');
+  if (slider && valSpan) {
+    slider.addEventListener('input', function() {
+      valSpan.textContent = parseFloat(this.value).toFixed(1);
+    });
+  }
+});
+
+async function loadLLMConfig() {
+  try {
+    var r = await fetch('/api/config'); var d = await r.json();
+    var sel = document.getElementById('cfgModel');
+    if (sel && d.model) { sel.value = d.model; }
+    var slider = document.getElementById('cfgTemp');
+    if (slider && d.temperature != null) { slider.value = d.temperature; }
+    var valSpan = document.getElementById('cfgTempVal');
+    if (valSpan && d.temperature != null) { valSpan.textContent = parseFloat(d.temperature).toFixed(1); }
+    var mt = document.getElementById('cfgMaxTokens');
+    if (mt && d.max_tokens) { mt.value = d.max_tokens; }
+  } catch(_) {}
+}
+
+async function applyLLMConfig() {
+  var body = {};
+  var sel = document.getElementById('cfgModel');
+  if (sel) { body.model = sel.value; }
+  var slider = document.getElementById('cfgTemp');
+  if (slider) { body.temperature = parseFloat(slider.value); }
+  var mt = document.getElementById('cfgMaxTokens');
+  if (mt) { body.max_tokens = parseInt(mt.value) || 8192; }
+  var statusEl = document.getElementById('cfgStatus');
+  if (statusEl) { statusEl.textContent = '更新中...'; statusEl.style.color = 'var(--text3)'; }
+  try {
+    var r = await fetch('/api/config/llm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    var d = await r.json();
+    if (statusEl) {
+      statusEl.textContent = '✓ 已应用 (' + (d.changed||[]).join(', ') + ')';
+      statusEl.style.color = 'var(--green)';
+      setTimeout(function() { statusEl.textContent = ''; }, 3000);
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = '✗ ' + e.message; statusEl.style.color = 'var(--red)'; }
+  }
+}
+
 // ── 静态数据轮询 ──
 async function pollStatic() {
   loadFileTree();
+  loadLLMConfig();
+  try {
   try {
     const r = await fetch('/api/tools'); const t = await r.json();
     if (t.tools && t.tools.length > 0) {
