@@ -298,8 +298,18 @@ class AnthropicProvider(LLMProvider):
     def _chat_stream(self, client, **kwargs):
         content = ""
         tool_calls = []
+        last_event_time = time.time()
+        stall_active_start = time.time()
         with client.messages.create(**kwargs) as stream:
             for event in stream:
+                now = time.time()
+
+                # 被动超时：距上次事件超过 30s → 网络停滞
+                if now - last_event_time > STALL_PASSIVE_TIMEOUT:
+                    raise TimeoutError(
+                        f"流式响应被动超时 {STALL_PASSIVE_TIMEOUT}s（距上次事件）")
+                last_event_time = now
+
                 if event.type == "content_block_delta":
                     if event.delta.type == "text_delta":
                         chunk = event.delta.text
@@ -309,6 +319,11 @@ class AnthropicProvider(LLMProvider):
                 elif event.type == "content_block_start":
                     if event.block.type == "tool_use":
                         tool_calls.append({"name": event.block.name, "args": {}})
+
+                # 主动超时：90s 总耗时上限
+                if now - stall_active_start > STALL_ACTIVE_TIMEOUT:
+                    raise TimeoutError(
+                        f"流式响应主动超时 {STALL_ACTIVE_TIMEOUT}s（总耗时）")
         return LLMResponse(content=content, stop_reason="end_turn", model=kwargs.get("model", ""))
 
     def _parse_response(self, response) -> LLMResponse:
@@ -704,8 +719,12 @@ class OpenAIProvider(LLMProvider):
         try:
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
-                # 停滞检测：有事件就重置计时
                 now = time.time()
+
+                # 被动超时：距上次事件超过 30s → 网络停滞
+                if now - last_event_time > STALL_PASSIVE_TIMEOUT:
+                    raise TimeoutError(
+                        f"流式响应被动超时 {STALL_PASSIVE_TIMEOUT}s（距上次事件）")
                 last_event_time = now
 
                 if not chunk.choices or len(chunk.choices) == 0:
@@ -751,9 +770,10 @@ class OpenAIProvider(LLMProvider):
                             if tc.function.arguments:
                                 tool_calls_acc[idx]["arguments"] += tc.function.arguments
 
-                # 主动停滞检测
+                # 主动超时：90s 总耗时上限
                 if now - stall_active_start > STALL_ACTIVE_TIMEOUT:
-                    raise TimeoutError(f"流式响应停滞超过 {STALL_ACTIVE_TIMEOUT}s")
+                    raise TimeoutError(
+                        f"流式响应主动超时 {STALL_ACTIVE_TIMEOUT}s（总耗时）")
 
         except Exception as stream_err:
             _log.warning("stream_fallback: %s", stream_err)
