@@ -906,6 +906,14 @@ class Agent:
         root_path = os.path.abspath(root_path)
         if not os.path.isdir(root_path):
             os.makedirs(root_path, exist_ok=True)
+        # 同步到 ToolContext 的 working_dir（供 bash 等工具使用）
+        try:
+            from .tools.registry import get_registry
+            reg = get_registry()
+            ctx = reg._context
+            ctx.working_dir = root_path
+        except Exception:
+            pass
         # 重新初始化 WorkspaceScanner
         try:
             from .cognition import WorkspaceScanner

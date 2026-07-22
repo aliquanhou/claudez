@@ -56,6 +56,12 @@ _WORKSPACE_ROOT = os.path.abspath("D:/ForgeX")
 
 
 def _build_app(agent) -> FastAPI:
+    # 初始化工作空间（同步到 Agent）
+    try:
+        agent.set_workspace_root(_WORKSPACE_ROOT)
+    except Exception:
+        pass
+
     app = FastAPI(title="ForgeX Cockpit", version="1.0.0")
 
     if STATIC_DIR.exists():

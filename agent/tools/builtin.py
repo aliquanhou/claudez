@@ -154,16 +154,31 @@ def bash(command: str, timeout: int = 30) -> str:
     """执行 shell 命令（Windows CMD，支持流式输出）。
 
     如果当前线程注册了流式输出回调，会逐行推送 stdout/stderr。
+    自动在工作空间目录下执行。
 
     Args:
         command: 要执行的命令
         timeout: 超时秒数
     """
+    import platform
     import threading
+
     stream_cb = None
     try:
         from .registry import get_stream_callback
         stream_cb = get_stream_callback()
+    except Exception:
+        pass
+
+    # 自动 cd 到工作空间目录
+    try:
+        from .registry import get_registry
+        wd = get_registry()._context.working_dir
+        if wd:
+            if platform.system() == "Windows":
+                command = f"cd /d {wd} && {command}"
+            else:
+                command = f"cd {wd} && {command}"
     except Exception:
         pass
 
@@ -179,30 +194,61 @@ def bash(command: str, timeout: int = 30) -> str:
         )
 
         output_lines = []
-        timer = threading.Timer(timeout, lambda: process.kill() if process.poll() is None else None)
+        done_flag = [False]
+
+        def _kill_proc(proc, flag):
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            flag[0] = True
+            try:
+                if proc.stdout: proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                if proc.stderr: proc.stderr.close()
+            except Exception:
+                pass
+
+        timer = threading.Timer(timeout, lambda: _kill_proc(process, done_flag))
         timer.start()
 
         def read_stream(stream, label):
-            for line in iter(stream.readline, ""):
-                if not line:
-                    break
-                output_lines.append(line)
-                if stream_cb:
-                    stream_cb(line.rstrip())
-            stream.close()
+            try:
+                for line in iter(stream.readline, ""):
+                    if not line or done_flag[0]:
+                        break
+                    output_lines.append(line)
+                    if stream_cb:
+                        stream_cb(line.rstrip())
+            except (ValueError, OSError):
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
         stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, "stdout"), daemon=True)
         stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, "stderr"), daemon=True)
         stdout_thread.start()
         stderr_thread.start()
-        stdout_thread.join()
-        stderr_thread.join()
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
 
-        process.wait()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
         timer.cancel()
 
+        if done_flag[0] and not output_lines:
+            return f"[超时] 命令执行超过 {timeout} 秒"
+
         output = "".join(output_lines) if output_lines else "(无输出)"
-        if process.returncode != 0:
+        if process.returncode is not None and process.returncode != 0:
             output += f"\n退出码: {process.returncode}"
         return output
 
