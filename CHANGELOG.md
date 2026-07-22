@@ -89,3 +89,13 @@
 - 这是 ForgeX 认知层的第一个完整发布版本
 - 铁三角架构（TaskContext + IntentResonator + ContextCompiler）已就位
 - 与现有 prompt.py 采用桥接策略，零破坏性接入
+
+## [forgex-v0.5.1] - 2026-07-22
+
+### Added
+- **web_fetch 工具**：抓取网页纯文本内容
+  - 使用 requests + BeautifulSoup，去除脚本/样式/导航噪音
+  - 自动截断 10000 字符，防止 token 溢出
+  - 友好错误信息（404/403/超时/连接失败）
+  - 兼容 Agent 工具系统（@tool 装饰器注册）
+
