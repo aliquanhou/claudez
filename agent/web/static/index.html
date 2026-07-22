@@ -438,16 +438,18 @@ body {
     <div class="sec-title">🧠 认知</div>
     <div class="gauge">
       <span class="lb">意图</span>
-      <span style="font-size:13px;color:var(--accent);font-weight:600;" id="rIntent">—</span>
+      <span style="font-size:13px; color:var(--accent); font-weight:600;" id="rIntent">—</span>
     </div>
     <div class="gauge">
       <span class="lb">置信度</span>
       <div class="bar"><div class="fill" id="rConfBar" style="width:0%;background:linear-gradient(90deg,var(--accent),var(--accent3));"></div></div>
       <span class="vl" id="rConfVal">0%</span>
     </div>
+    <div class="phase-track" id="phaseTrack" style="margin:4px 0 6px;display:flex;gap:2px;height:4px;border-radius:2px;overflow:hidden;"></div>
     <div class="stat-r"><span class="lb">阶段</span><span class="vl" id="rPhase">—</span></div>
     <div class="stat-r"><span class="lb">轮次</span><span class="vl" id="rTurn">0</span></div>
     <div class="stat-r"><span class="lb">决策</span><span class="vl" id="rDecisions">0</span></div>
+    <div class="stat-r"><span class="lb">工具调用</span><span class="vl" id="rToolCalls">0</span></div>
   </div>
 
   <div class="sec">
@@ -536,6 +538,12 @@ function connectSSE() {
   if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
   evtSrc = new EventSource('/api/stream');
 
+  evtSrc.onopen = function() {
+    var sConn = document.getElementById('sConn');
+    if (sConn) sConn.innerHTML = '<span class="s-dot green"></span>已连接';
+    log('i', 'SSE 连接建立');
+  };
+
   evtSrc.addEventListener('token', e => {
     const d = JSON.parse(e.data); appendToken(d.text);
   });
@@ -597,6 +605,9 @@ function connectSSE() {
   evtSrc.onerror = () => {
     evtSrc.close();
     evtSrc = null;
+    var sConn = document.getElementById('sConn');
+    if (sConn) sConn.innerHTML = '<span class="s-dot yellow"></span>重连中';
+    log('w', 'SSE 连接断开，2s 后重连');
     sseReconnectTimer = setTimeout(connectSSE, 2000);
   };
 }
@@ -870,20 +881,36 @@ function clearChat() {
   msgs.innerHTML = '<div class="msg agent"><div class="bubble">对话已清空。</div></div>';
 }
 
+// ── 阶段配置 ──
+const PHASES = ['intent_clarify', 'analysis', 'planning', 'executing', 'verifying', 'done'];
+const PHASE_COLORS = { intent_clarify:'#818cf8', analysis:'#eab308', planning:'#f97316', executing:'#22c55e', verifying:'#a855f7', done:'#22c55e' };
+
 // ── 仪表板 ──
 function updateDash(d) {
   setT('rIntent', d.intent || '—');
-  setT('rConfVal', (d.intent_conf ? (d.intent_conf * 100).toFixed(0) : '0') + '%');
-  document.getElementById('rConfBar').style.width = (d.intent_conf ? d.intent_conf * 100 : 0) + '%';
+  var confPct = d.intent_conf ? Math.round(d.intent_conf * 100) : 0;
+  setT('rConfVal', confPct + '%');
+  document.getElementById('rConfBar').style.width = confPct + '%';
 
-  const pe = document.getElementById('rPhase');
+  // 阶段徽章
+  var pe = document.getElementById('rPhase');
   if (d.phase) {
-    const cls = d.phase === 'intent_clarify' ? 'ic' : d.phase === 'analysis' ? 'an' : d.phase === 'planning' ? 'pl' : d.phase === 'executing' ? 'ex' : d.phase === 'verifying' ? 've' : d.phase === 'done' ? 'do' : '';
+    var cls = d.phase === 'intent_clarify' ? 'ic' : d.phase === 'analysis' ? 'an' : d.phase === 'planning' ? 'pl' : d.phase === 'executing' ? 'ex' : d.phase === 'verifying' ? 've' : d.phase === 'done' ? 'do' : '';
     pe.innerHTML = '<span class="p-badge ' + cls + '">' + phaseCN(d.phase) + '</span>';
+    // 阶段轨
+    var pt = document.getElementById('phaseTrack');
+    if (pt) {
+      var currentIdx = PHASES.indexOf(d.phase);
+      pt.innerHTML = PHASES.map(function(p, i) {
+        var color = i <= currentIdx ? PHASE_COLORS[p] : 'var(--surface3)';
+        return '<div style="flex:1;background:' + color + ';border-radius:2px;transition:background 0.3s;"></div>';
+      }).join('');
+    }
   } else { pe.textContent = '—'; }
 
   setT('rTurn', String(d.turn_count ?? 0));
   setT('rDecisions', String(d.decisions ?? 0));
+  setT('rToolCalls', String(d.decisions ?? 0));
   setT('rGoal', (d.goal || '—').slice(0, 60));
   setT('rFiles', String(d.files_modified ?? 0));
   setT('rProject', d.project_type || '—');
@@ -892,20 +919,22 @@ function updateDash(d) {
   setT('phaseBadge', phaseCN(d.phase));
   setT('sPhase', phaseCN(d.phase));
 
-  // 状态栏 Token
+  // 状态栏 Token & 耗时
   if (d.decisions) totalTokens = Math.max(totalTokens, d.decisions * 200);
   setT('sTokens', (totalTokens / 1000).toFixed(1) + 'k');
   if (startTime > 0) {
-    const sec = ((Date.now() - startTime) / 1000).toFixed(1);
+    var sec = ((Date.now() - startTime) / 1000).toFixed(1);
     setT('sDuration', sec + 's');
   }
 
   // 决策列表
-  const dl = document.getElementById('rDecList');
+  var dl = document.getElementById('rDecList');
   if (d.recent_decisions && d.recent_decisions.length > 0) {
-    dl.innerHTML = d.recent_decisions.slice(-5).reverse().map(dd =>
-      '<div class="d-item"><span class="ts">' + (dd.ts ? new Date(dd.ts*1000).toLocaleTimeString() : '') + '</span>' + escHtml(dd.desc) + '</div>'
-    ).join('');
+    dl.innerHTML = d.recent_decisions.slice(-5).reverse().map(function(dd) {
+      return '<div class="d-item"><span class="ts">' + (dd.ts ? new Date(dd.ts * 1000).toLocaleTimeString() : '') + '</span>' + escHtml(dd.desc) + '</div>';
+    }).join('');
+  } else {
+    dl.innerHTML = '<span style="font-size:11px;color:var(--text3);">(无)</span>';
   }
 }
 function phaseCN(p) { return {'intent_clarify':'意图澄清','analysis':'分析','planning':'规划','executing':'执行','verifying':'验证','done':'完成'}[p] || p || '—'; }
