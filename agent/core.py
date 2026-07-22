@@ -26,9 +26,7 @@ from .memory import ShortTermMemory, SemanticMemory, get_semantic_memory
 from .permissions import get_permission_manager, check_permission
 from .debug_stream import DebugCollector
 
-
 # ── 日志辅助（替代 structlog，零依赖） ──
-
 import logging
 
 _log = logging.getLogger("claudez.agent")
@@ -39,6 +37,30 @@ _ch.setFormatter(logging.Formatter(
 if not _log.handlers:
     _log.addHandler(_ch)
     _log.setLevel(logging.INFO)
+
+
+# Cognition 层（v0.3.4）— 可选加载，失败不影响核心功能
+try:
+    from .cognition import (
+        TaskManager, TaskPhase, ContextCompiler,
+        IntentResonator, IntentSignal, BehavioralSnapshot,
+        WorkspaceScanner,
+    )
+    _HAS_COGNITION = True
+except ImportError as _e:
+    _HAS_COGNITION = False
+    _log.warning("cognition layer not available: %s", _e)
+
+# Execution 层（v0.4.0）— 可选加载
+try:
+    from .execution import (
+        PlanExecutor, ToolOrchestrator, PathValidator, FeedbackLoop,
+    )
+    from .cognition.execution_verifier import ExecutionVerifier as _EXEC_VERIFIER
+    _HAS_EXECUTION = True
+except ImportError as _ee:
+    _HAS_EXECUTION = False
+    _log.warning("execution layer not available: %s", _ee)
 
 
 # ── 默认配置 ──
@@ -148,8 +170,47 @@ class Agent:
             version="2.1",
         )
 
-        _log.info("agent_init  model=%s provider=%s permission=%s",
-                  self.config["model"], self.config["provider"], pm.mode.value)
+        # Cognition v0.3.4 — 可选认知层
+        if _HAS_COGNITION:
+            self.task_manager = TaskManager()
+            self.intent_resonator = IntentResonator(window_size=20)
+            try:
+                self.workspace_scanner = WorkspaceScanner(".")
+                _log.info("cognition_init workspace=%s files=%d",
+                          self.workspace_scanner.info.root_path,
+                          self.workspace_scanner.info.file_count)
+            except Exception:
+                self.workspace_scanner = None
+                _log.warning("cognition_init workspace scanner failed")
+            self.context_compiler = ContextCompiler(max_workspace_files=10)
+            self._cog_task_id = None
+            _log.info("cognition_init complete")
+        else:
+            self.task_manager = None
+            self.intent_resonator = None
+            self.workspace_scanner = None
+            self.context_compiler = None
+
+        # Execution 层（v0.4.0）— 执行层初始化
+        if _HAS_EXECUTION:
+            self.path_validator = PathValidator(".")
+            self.plan_executor = PlanExecutor(".")
+            self.tool_orchestrator = ToolOrchestrator(timeout=30, max_retries=1)
+            ev = _EXEC_VERIFIER()
+            self.feedback_loop = FeedbackLoop(
+                self.task_manager if _HAS_COGNITION else None,
+                ev,
+            )
+            _log.info("execution_init complete")
+        else:
+            self.path_validator = None
+            self.plan_executor = None
+            self.tool_orchestrator = None
+            self.feedback_loop = None
+
+        _log.info("agent_init  model=%s provider=%s permission=%s cognition=%s execution=%s",
+                  self.config["model"], self.config["provider"], pm.mode.value,
+                  _HAS_COGNITION, _HAS_EXECUTION)
 
     def _setup_provider_callbacks(self):
         def stream_handler(chunk: str):
@@ -183,6 +244,45 @@ class Agent:
         self._tool_round = 0
         self._consecutive_errors = 0
         self._call_history = []
+
+        # Cognition v0.3.4: 复用或创建任务 + 自动阶段推进
+        if self.task_manager is not None:
+            current = self.task_manager.get_current_task()
+            if current is None:
+                task = self.task_manager.create_task(user_message[:500])
+                self._cog_task_id = task.task_id
+                _log.info("cognition task created id=%s phase=%s",
+                          task.task_id, task.current_phase.value)
+            else:
+                self._cog_task_id = current.task_id
+            # 每轮递增 turn_count
+            t = self.task_manager.get_current_task()
+            if t:
+                t.turn_count += 1
+
+        # Cognition: 根据意图自动推进阶段
+        if self.task_manager is not None and self.intent_resonator is not None:
+            intent = self.intent_resonator.get_intent()
+            if intent and self._cog_task_id:
+                phase_map = {
+                    "implementing": "executing",
+                    "debugging": "analysis",
+                    "refactoring": "planning",
+                    "exploring": "analysis",
+                    "reviewing": "verifying",
+                }
+                target = phase_map.get(intent.primary_intent.value)
+                if target:
+                    t = self.task_manager.get_current_task()
+                    if t and t.current_phase.value == "intent_clarify":
+                        from .cognition import TaskPhase
+                        try:
+                            new_phase = TaskPhase(target)
+                            self.task_manager.transition_phase(self._cog_task_id, new_phase)
+                            _log.info("cognition auto_transition %s -> %s (intent=%s)",
+                                      t.current_phase.value, target, intent.primary_intent.value)
+                        except Exception:
+                            pass
         self._start_time = time.time()
         self.stats["start_time"] = self._start_time
 
@@ -208,6 +308,14 @@ class Agent:
                 messages = [{"role": "user", "content": user_message, "timestamp": time.time()}]
 
             system_prompt = self._build_prompt()
+
+            # Cognition v0.3.4: 每轮日志
+            if self.intent_resonator is not None:
+                intent = self.intent_resonator.get_intent()
+                if intent:
+                    _log.info("cognition intent=%s conf=%.2f urgency=%.2f",
+                              intent.primary_intent.value, intent.confidence, intent.urgency)
+
             tools = get_all_tools()
 
             if self.on_thinking:
@@ -230,6 +338,16 @@ class Agent:
                 self._on_error("LLM 调用失败", Exception(response.content))
                 final_response = response.content
                 break
+
+            # Cognition v0.3.4: 记录工具调用决策
+            if self.task_manager is not None and self._cog_task_id:
+                if response.tool_calls:
+                    tool_names = [tc["name"] for tc in response.tool_calls]
+                    self.task_manager.add_decision(
+                        self._cog_task_id,
+                        description=f"调用工具: {', '.join(tool_names)}",
+                        rationale=response.content[:200] if response.content else "",
+                    )
 
             if response.tool_calls:
                 self._tool_round += 1
@@ -328,6 +446,12 @@ class Agent:
 
         self.stats["total_duration_ms"] = (time.time() - self._start_time) * 1000
         self._running = False
+
+        # Cognition v0.3.4: 任务结束日志
+        if self.task_manager is not None:
+            summary = self.task_manager.get_summary()
+            _log.info("cognition complete summary=%s", summary.replace(chr(10), " | "))
+
         _log.info("agent_complete duration=%.0fms llm=%d tools=%d tokens=%d",
                   self.stats["total_duration_ms"], self.stats["llm_calls"],
                   self.stats["tool_calls"], self.stats["total_tokens"])
@@ -413,6 +537,31 @@ class Agent:
             "notes": self.short_memory.get_notes(limit=3),
             "tasks": list(self.short_memory.task_stack),
         }
+
+        # Cognition v0.3.4: 编译认知上下文 (bridge)
+        custom_sections = []
+        if self.context_compiler is not None and self.task_manager is not None:
+            intent_vector = None
+            if self.intent_resonator is not None:
+                intent_vector = self.intent_resonator.get_intent()
+            workspace_info = None
+            if self.workspace_scanner is not None:
+                try:
+                    workspace_info = self.workspace_scanner.get_info()
+                    _log.debug("cognition workspace info: %s files=%d",
+                               workspace_info.root_path, workspace_info.file_count)
+                except Exception as e:
+                    _log.warning("cognition workspace scan failed: %s", e)
+            compiled = self.context_compiler.compile(
+                self.task_manager,
+                intent_vector=intent_vector,
+                workspace_info=workspace_info,
+            )
+            prompt_text = compiled.to_prompt()
+            if prompt_text:
+                custom_sections.append(("认知上下文", prompt_text))
+                _log.debug("cognition context compiled len=%d", len(prompt_text))
+
         context = PromptContext(
             user_id=self.session.id,
             tools=get_all_tools(),
@@ -422,6 +571,7 @@ class Agent:
             short_memories=short_memories,
             project_info=self._get_project_info(),
             session_state=self.session.get_state() if self.config["enable_adaptations"] else None,
+            custom_sections=custom_sections,
         )
         return self.prompt_builder.build(context)
 
