@@ -17,6 +17,20 @@
 - 8/8 验收场景全部通过
 - 端到端流水线验证通过
 
+### Added (第二批)
+- `path_validator`：文件路径安全校验
+  - 白名单校验（必须在工作区内）
+  - 黑名单目录拦截（.git, node_modules, 系统路径等）
+  - 敏感文件类型拦截（.key, .pem, .crt）
+  - `filter_safe()` / `validate_all()` 批量接口
+- `feedback_loop`：执行结果反馈闭环
+  - ExecutionVerifier 执行验证 → 结果回写 TaskContext
+  - PASS → phase=DONE, PARTIAL → ANALYSIS, FAIL → PLANNING
+  - 自动阶段回退与推进
+- `core.py` 集成：4 个执行模块接入 Agent 主循环
+  - 修复 `_log` 定义在 cognition import 之前的顺序问题
+- 所有验收测试通过（PathValidator: 5/5, FeedbackLoop: 1/1, 全链路: 1/1, Agent Init: 1/1）
+
 ## [forgex-v0.3.4] - 2026-07-22
 
 ### Added
