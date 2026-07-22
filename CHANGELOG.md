@@ -1,6 +1,54 @@
 # Changelog
 
-## [forgex-v0.5.0] - 2026-07-22
+## [forgex-v1.0.0] - 2026-07-22
+
+### 四层架构完整发布
+
+ForgeX v1.0.0 合并了 v0.3.4 → v0.5.2 全部里程碑，标志着四层 AI Agent 架构正式定稿。
+
+| 层级 | 版本 | 模块 |
+|------|------|------|
+| 🧠 **认知层** | v0.3.4 | 意图识别 / 任务管理 / 方案验证 / 执行验证 / 上下文编译 / 工作区扫描 |
+| ⚡ **执行层** | v0.4.0 | PlanExecutor / ToolOrchestrator / PathValidator / FeedbackLoop |
+| 🔧 **工具层** | v0.5.0+ | 14 内置工具 + web_fetch + web_search + 主机工具链探测 |
+| 🖥️ **Web 驾驶舱** | v0.4.0+ | 3 栏布局 / 文件树 / 状态面板 / LLM 配置 / 停止执行 |
+
+### 认知层 (v0.3.4)
+- TaskManager 多任务管理，6 个数据类
+- WorkspaceScanner 惰性扫描，项目类型推断，文件树构建（深度 4）
+- IntentResonator 7 条规则引擎，从行为快照蒸馏意图
+- PlanVerifier 7 条验证规则，多候选评估
+- ExecutionVerifier 6 阶段验证，偏差分析
+- ContextCompiler 编译为结构化 Prompt，桥接现有系统
+
+### 执行层 (v0.4.0)
+- PlanExecutor：方案→原子执行步骤，1:N 映射，文件冲突检测
+- ToolOrchestrator：并行执行无依赖步骤，超时控制 + 自动重试
+- PathValidator：白名单 + 黑名单 + 敏感文件类型拦截
+- FeedbackLoop：验证→回写→自动阶段推进（PASS/DONE, PARTIAL/ANALYSIS, FAIL/PLANNING）
+
+### 工具层 (v0.5.0+)
+- **web_fetch**：requests + BeautifulSoup 网页纯文本提取，自动去噪，10000 字符截断
+- **web_search**：DuckDuckGo 搜索，返回标题+URL+摘要
+- **EnvProbe**：20 种开发工具一键探测，60s 缓存，prompt 自动注入
+- 14 个内置工具覆盖文件操作 / 命令执行 / 网络 / 系统监控 / 子 Agent
+
+### Web 驾驶舱
+- 3 栏布局（左：文件树+工具+配置 / 中：对话流 / 右：状态+日志）
+- 交互式文件树：展开/折叠、点击 `@file:path` 引用
+- LLM 配置面板：模型/温度/MaxTokens 实时生效
+- 停止执行：前端→`POST /api/stop`→`Provider.cancel()` 中断流式连接
+- 阶段轨可视化：6 阶段彩色进度条
+- SSE 连接状态监控 + 自动重连
+- 全局 JS 错误捕获（`window.onerror` + `unhandledrejection`）
+
+### 修复
+- `_read_agent_status` 插入 `class Agent` 中间导致 12 个方法成为死代码
+- SSE error 事件 `JSON.parse(e.data)` 崩溃（断开时 data 为空）
+- 工具成功状态检测：`[完成]` 误判为 `[错误]`
+- 文件树/工具列表加载卡"扫描中"（新增 3 次重试）
+
+## [forgex-v0.5.2] - 2026-07-22
 
 ### Added
 - **LLM 配置实时生效**
