@@ -177,13 +177,30 @@ body {
   color: var(--text3); margin-bottom: 6px; font-weight: 600;
 }
 .tree-item {
-  padding: 2px 6px; cursor: default; border-radius: 3px;
+  padding: 2px 6px; cursor: pointer; border-radius: 3px;
   font-size: 12px; color: var(--text2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background 0.15s;
+  user-select: none;
 }
-.tree-item .ic { margin-right: 4px; }
+.tree-item:hover { background: var(--surface3); }
+.tree-item .ic { margin-right: 4px; flex-shrink: 0; }
 .tree-item .ic.folder { color: var(--yellow); }
 .tree-item .ic.py { color: var(--accent); }
+.tree-children { padding-left: 14px; }
+.tree-arrow {
+  display: inline-block; width: 12px; text-align: center;
+  transition: transform 0.15s; flex-shrink: 0; font-size: 10px;
+  color: var(--text3);
+}
+.tree-arrow.expanded { transform: rotate(90deg); }
+.tree-name { overflow: hidden; text-overflow: ellipsis; }
+.tree-item-inner {
+  display: flex; align-items: center; gap: 2px; padding: 1px 0;
+}
+.tree-count {
+  font-size: 10px; color: var(--text3); margin-left: 4px;
+}
 .tool-item {
   padding: 2px 6px; font-size: 11px; color: var(--text2);
   display: flex; align-items: center; gap: 6px;
@@ -377,9 +394,12 @@ body {
 <!-- ═══ 左侧 ═══ -->
 <div class="left-panel">
   <div class="sec">
-    <div class="sec-title">📁 项目</div>
+    <div class="sec-title">📁 项目&ensp;<span style="font-weight:400;font-size:9px;color:var(--text3);" id="filesCount">扫描中</span></div>
     <div id="projectTree">
       <div class="tree-item" style="color:var(--text3);font-size:11px;">扫描中...</div>
+    </div>
+    <div style="margin-top:4px;padding:0 6px;font-size:10px;color:var(--text3);display:none;" id="projectTypeRow">
+      类型: <span id="projectType">—</span>
     </div>
   </div>
   <div class="sec">
@@ -901,23 +921,131 @@ function log(level, msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ── 静态数据轮询 ──
-async function pollStatic() {
+// ── 文件树 ──
+let fileTreeData = {};
+
+async function loadFileTree() {
   try {
-    const r = await fetch('/api/status'); const s = await r.json();
-    const tree = document.getElementById('projectTree');
-    if (s.workspace_files > 0) {
-      tree.innerHTML = '<div class="tree-item"><span class="ic folder">📁</span>工作区</div>'
-        + '<div class="tree-item" style="padding-left:16px;font-size:11px;color:var(--text3);">' + s.workspace_files + ' 个文件</div>'
-        + '<div class="tree-item" style="padding-left:16px;font-size:11px;color:var(--text3);">类型: ' + (s.project_type || '未知') + '</div>';
+    const r = await fetch('/api/files'); const d = await r.json();
+    if (d.tree) fileTreeData = d.tree;
+    renderFileTree(d.tree || {}, 'projectTree');
+    // 更新 header 信息
+    if (d.file_count) {
+      document.getElementById('filesCount').textContent = d.file_count + ' 文件';
+    }
+    if (d.project_type) {
+      document.getElementById('projectType').textContent = d.project_type;
+      var ptr = document.getElementById('projectTypeRow');
+      if (ptr) ptr.style.display = 'block';
     }
   } catch(_) {}
+}
+
+function renderFileTree(tree, containerId, pathPrefix, containerEl) {
+  var container = containerEl || document.getElementById(containerId);
+  if (!container) return;
+  pathPrefix = pathPrefix || '';
+  container.innerHTML = '';
+  const entries = Object.entries(tree).sort(function(a, b) {
+    var aIsDir = a[1] !== null && typeof a[1] === 'object';
+    var bIsDir = b[1] !== null && typeof b[1] === 'object';
+    if (aIsDir && !bIsDir) return -1;
+    if (!aIsDir && bIsDir) return 1;
+    return a[0].localeCompare(b[0]);
+  });
+  for (var i = 0; i < entries.length; i++) {
+    var name = entries[i][0];
+    var children = entries[i][1];
+    var isDir = children !== null && typeof children === 'object';
+    var fullPath = pathPrefix ? pathPrefix + '/' + name : name;
+    var div = document.createElement('div'); div.className = 'tree-item';
+
+    if (isDir) {
+      // 子节点数
+      var childFiles = countFiles(children);
+      div.innerHTML = '<div class="tree-item-inner">'
+        + '<span class="tree-arrow">▶</span>'
+        + '<span class="ic folder">📁</span>'
+        + '<span class="tree-name">' + escHtml(name) + '</span>'
+        + '<span class="tree-count">' + childFiles + '</span>'
+        + '</div>';
+      var subContainer = document.createElement('div');
+      subContainer.className = 'tree-children';
+      subContainer.style.display = 'none';
+      var arrow = div.querySelector('.tree-arrow');
+      div.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        var expanded = subContainer.style.display !== 'none';
+        subContainer.style.display = expanded ? 'none' : 'block';
+        if (arrow) arrow.className = 'tree-arrow' + (expanded ? '' : ' expanded');
+        // 懒加载子节点
+        if (!expanded && subContainer.children.length === 0) {
+          renderFileTree(children, '', fullPath, subContainer);
+        }
+      });
+      div.appendChild(subContainer);
+    } else {
+      // 文件
+      var ext = name.split('.').pop().toLowerCase();
+      var icon = getFileIcon(ext);
+      div.innerHTML = '<div class="tree-item-inner" style="padding-left:14px;">'
+        + '<span class="ic">' + icon + '</span>'
+        + '<span class="tree-name">' + escHtml(name) + '</span>'
+        + '</div>';
+      div.addEventListener('click', function(fp) {
+        return function(ev) {
+          ev.stopPropagation();
+          insertAtCursor('@file:' + fp);
+        };
+      }(fullPath));
+    }
+    container.appendChild(div);
+  }
+}
+
+function countFiles(tree) {
+  var count = 0;
+  for (var k in tree) {
+    if (tree[k] !== null && typeof tree[k] === 'object') {
+      count += countFiles(tree[k]);
+    } else {
+      count++;
+    }
+  }
+  return count;
+}
+
+function getFileIcon(ext) {
+  var icons = {
+    py: '🐍', js: '🟨', ts: '🔵', jsx: '⚛️', tsx: '⚛️',
+    html: '🌐', css: '🎨', json: '📋', yaml: '📋', yml: '📋',
+    md: '📝', txt: '📄', toml: '⚙️', cfg: '⚙️', ini: '⚙️',
+    sh: '💻', bat: '💻', ps1: '💻',
+    png: '🖼️', jpg: '🖼️', svg: '🖼️', ico: '🖼️',
+    gitignore: '🙈', dockerfile: '🐳',
+  };
+  return icons[ext] || '📄';
+}
+
+// ── @file 插入 ──
+function insertAtCursor(text) {
+  var start = inp.selectionStart, end = inp.selectionEnd;
+  var val = inp.value;
+  inp.value = val.substring(0, start) + text + ' ' + val.substring(end);
+  inp.selectionStart = inp.selectionEnd = start + text.length + 1;
+  inp.focus();
+  inp.dispatchEvent(new Event('input'));
+}
+
+// ── 静态数据轮询 ──
+async function pollStatic() {
+  loadFileTree();
   try {
     const r = await fetch('/api/tools'); const t = await r.json();
     if (t.tools && t.tools.length > 0) {
-      document.getElementById('toolList').innerHTML = t.tools.slice(0, 10).map(tl =>
-        '<div class="tool-item"><span class="dot"></span>' + escHtml(tl.name) + '</div>'
-      ).join('');
+      document.getElementById('toolList').innerHTML = t.tools.slice(0, 10).map(function(tl) {
+        return '<div class="tool-item"><span class="dot"></span>' + escHtml(tl.name) + '</div>';
+      }).join('');
     }
   } catch(_) {}
 }
