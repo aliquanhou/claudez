@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from .prompt import DynamicPromptBuilder, PromptContext
 from .providers import create_provider, LLMProvider, LLMResponse
+from ._trace import T
 from .session import Session, get_session, create_isolated_session
 from .tools import get_registry, get_all_tools, execute_tool
 from .tools.registry import set_stream_callback
@@ -106,6 +107,55 @@ ContentBlockCallback = Callable[[str, dict], None]
 
 
 # ── Agent 核心 ──
+
+
+def _read_agent_status(agent) -> dict:
+    """读取 Agent 当前状态（独立函数供 server.py 也使用）。"""
+    status = {
+        "phase": "", "intent": "", "goal": "",
+        "decisions": 0, "turn_count": 0,
+        "files_modified": 0, "workspace_files": 0,
+        "project_type": "", "cognition": False, "execution": False,
+        "recent_decisions": [],
+    }
+    try:
+        from agent.core import _HAS_COGNITION as hc, _HAS_EXECUTION as he
+        status["cognition"] = hc
+        status["execution"] = he
+    except Exception:
+        pass
+    try:
+        if agent.task_manager is not None:
+            t = agent.task_manager.get_current_task()
+            if t:
+                status["phase"] = t.current_phase.value
+                status["goal"] = t.user_goal[:200]
+                status["decisions"] = len(t.decisions)
+                status["turn_count"] = t.turn_count
+                status["files_modified"] = len(t.modified_files)
+                status["recent_decisions"] = [
+                    {"desc": d.description[:80], "ts": d.timestamp}
+                    for d in t.decisions[-5:]
+                ]
+    except Exception:
+        pass
+    try:
+        if agent.intent_resonator is not None:
+            iv = agent.intent_resonator.get_intent()
+            if iv:
+                status["intent"] = iv.primary_intent.value
+                status["intent_conf"] = round(iv.confidence, 2)
+    except Exception:
+        pass
+    try:
+        if agent.workspace_scanner is not None:
+            info = agent.workspace_scanner.get_info()
+            if info:
+                status["workspace_files"] = info.file_count
+                status["project_type"] = info.project_type or ""
+    except Exception:
+        pass
+    return status
 
 class Agent:
     """ClaudeZ Agent 核心（升级版）。
@@ -239,6 +289,9 @@ class Agent:
 
     def stop(self):
         self._running = False
+        # v0.5: 同时中断正在执行的 LLM 流式请求
+        if hasattr(self, 'provider') and self.provider is not None:
+            self.provider.cancel()
 
     def run(self, user_message: str) -> str:
         self._running = True
@@ -307,9 +360,11 @@ class Agent:
         # 追加用户消息，不清除旧会话（保留上下文）
         self.session.add_message("user", user_message)
         _log.info("agent_run len=%d mode=%s", len(user_message), self.config["workflow_mode"])
+        T("RUN-ENTRY", f"len={len(user_message)} mode={self.config['workflow_mode']}")
         self.debug.log_decision(thought="开始处理用户请求", action="run",
                                 phase="start", confidence=1.0)
         final_response = ""
+        T("RUN-LOOP", "before while")
 
         while self._running:
             elapsed = time.time() - self._start_time
@@ -325,7 +380,9 @@ class Agent:
             if not messages:
                 messages = [{"role": "user", "content": user_message, "timestamp": time.time()}]
 
+            T("RUN-BUILD", f"messages={len(messages)}")
             system_prompt = self._build_prompt()
+            T("RUN-BUILD-DONE", f"prompt_len={len(system_prompt)}")
 
             # Cognition v0.3.4: 每轮日志
             if self.intent_resonator is not None:
@@ -334,15 +391,18 @@ class Agent:
                     _log.info("cognition intent=%s conf=%.2f urgency=%.2f",
                               intent.primary_intent.value, intent.confidence, intent.urgency)
 
+            T("RUN-TOOLS", "")
             tools = get_all_tools()
 
             if self.on_thinking:
                 self.on_thinking("思考中...")
             self.stats["llm_calls"] += 1
             _api_start = time.time()
+            T("RUN-LLM", f"tools={'yes' if tools else 'no'}")
             response = self.provider.chat_with_retry(
                 system_prompt=system_prompt, messages=messages, tools=tools,
             )
+            T("RUN-LLM-DONE", f"stop={response.stop_reason}")
             _api_dur = (time.time() - _api_start) * 1000
             inp = response.usage.get("input_tokens", 0) if response.usage else 0
             out = response.usage.get("output_tokens", 0) if response.usage else 0
@@ -642,53 +702,6 @@ class Agent:
             self.on_message = _orig_on_message
 
 
-def _read_agent_status(agent) -> dict:
-    """读取 Agent 当前状态（独立函数供 server.py 也使用）。"""
-    status = {
-        "phase": "", "intent": "", "goal": "",
-        "decisions": 0, "turn_count": 0,
-        "files_modified": 0, "workspace_files": 0,
-        "project_type": "", "cognition": False, "execution": False,
-        "recent_decisions": [],
-    }
-    try:
-        from agent.core import _HAS_COGNITION as hc, _HAS_EXECUTION as he
-        status["cognition"] = hc
-        status["execution"] = he
-    except Exception:
-        pass
-    try:
-        if agent.task_manager is not None:
-            t = agent.task_manager.get_current_task()
-            if t:
-                status["phase"] = t.current_phase.value
-                status["goal"] = t.user_goal[:200]
-                status["decisions"] = len(t.decisions)
-                status["turn_count"] = t.turn_count
-                status["files_modified"] = len(t.modified_files)
-                status["recent_decisions"] = [
-                    {"desc": d.description[:80], "ts": d.timestamp}
-                    for d in t.decisions[-5:]
-                ]
-    except Exception:
-        pass
-    try:
-        if agent.intent_resonator is not None:
-            iv = agent.intent_resonator.get_intent()
-            if iv:
-                status["intent"] = iv.primary_intent.value
-                status["intent_conf"] = round(iv.confidence, 2)
-    except Exception:
-        pass
-    try:
-        if agent.workspace_scanner is not None:
-            info = agent.workspace_scanner.get_info()
-            if info:
-                status["workspace_files"] = info.file_count
-                status["project_type"] = info.project_type or ""
-    except Exception:
-        pass
-    return status
 
     # ── 上下文压缩 ──
 

@@ -38,6 +38,14 @@ class SendBody(BaseModel):
     text: str
 
 
+class LLMConfigBody(BaseModel):
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    disable_thinking: bool | None = None
+    provider: str | None = None
+
+
 def _build_app(agent) -> FastAPI:
     app = FastAPI(title="ForgeX Cockpit", version="0.4.1")
 
@@ -243,6 +251,57 @@ def _build_app(agent) -> FastAPI:
             }
         except Exception as e:
             return {"tree": {}, "file_count": 0, "error": str(e)}
+
+    # ── LLM 配置 ──
+    @app.get("/api/config")
+    async def api_get_config():
+        cfg = agent.config
+        return {
+            "model": cfg.get("model", ""),
+            "provider": cfg.get("provider", ""),
+            "temperature": cfg.get("temperature", 0.0),
+            "max_tokens": cfg.get("max_tokens", 4096),
+            "api_timeout": cfg.get("api_timeout", 30),
+            "workflow_mode": cfg.get("workflow_mode", "agent"),
+            "disable_thinking": cfg.get("disable_thinking", True),
+        }
+
+    @app.post("/api/config/llm")
+    async def api_update_llm(body: LLMConfigBody):
+        changed = []
+        if body.model is not None:
+            agent.config["model"] = body.model
+            changed.append("model")
+        if body.temperature is not None:
+            agent.config["temperature"] = body.temperature
+            changed.append("temperature")
+        if body.max_tokens is not None:
+            agent.config["max_tokens"] = body.max_tokens
+            changed.append("max_tokens")
+        if body.disable_thinking is not None:
+            agent.config["disable_thinking"] = body.disable_thinking
+            changed.append("disable_thinking")
+        if body.provider is not None:
+            agent.config["provider"] = body.provider
+            from agent.providers import create_provider
+            agent.provider = create_provider(agent.config)
+            agent._setup_provider_callbacks()
+            changed.append("provider")
+        _log.info("config_updated: %s", ", ".join(changed))
+        return {"status": "updated", "changed": changed}
+
+    # ── 停止执行 ──
+    @app.post("/api/stop")
+    async def api_stop():
+        agent.stop()
+        try:
+            _agent_busy_lock.release()
+        except RuntimeError:
+            pass
+        _broadcast("error", {"text": "[已中断]"})
+        _broadcast("status_update", _read_status(agent))
+        T("SRV-STOP", "agent stopped")
+        return {"status": "stopped"}
 
     return app
 

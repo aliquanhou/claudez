@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import random
@@ -23,6 +24,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
+
+from .._trace import T
 
 
 _log = logging.getLogger("claudez.provider")
@@ -156,6 +159,10 @@ class LLMProvider(ABC):
         # API 调用超时（秒），防止请求挂起
         self.api_timeout = config.get("api_timeout", 30.0)
 
+        # 取消信号（v0.5）：用于中断正在执行的流式请求
+        self._cancel_requested = False
+        self._current_stream = None
+
         # 流式回调
         self.on_stream: Callable[[str], None] | None = None
 
@@ -170,13 +177,25 @@ class LLMProvider(ABC):
              tools: list[dict] | None = None) -> LLMResponse:
         ...
 
+    def cancel(self):
+        """取消当前正在执行的流式请求（v0.5）。"""
+        self._cancel_requested = True
+        if self._current_stream is not None:
+            try:
+                self._current_stream.close()
+            except Exception:
+                pass
+            self._current_stream = None
+
     def chat_with_retry(self, system_prompt: str, messages: list[dict],
                         tools: list[dict] | None = None) -> LLMResponse:
         """带智能重试的对话请求。"""
+        T("PROV-RETRY", f"enter model={self.model} messages={len(messages)} tools={'yes' if tools else 'no'} max_retries={self.max_retries}")
         last_error = None
         last_category = ErrorCategory.UNKNOWN
 
         for attempt in range(self.max_retries + 1):
+            T("PROV-RETRY", f"attempt {attempt}/{self.max_retries}")
             try:
                 return self.chat(system_prompt, messages, tools)
             except Exception as e:
@@ -250,6 +269,7 @@ class AnthropicProvider(LLMProvider):
 
     def chat(self, system_prompt: str, messages: list[dict],
              tools: list[dict] | None = None) -> LLMResponse:
+        T("ANTHROPIC-CHAT", f"enter stream={bool(self.on_stream)}")
         try:
             import anthropic
         except ImportError:
@@ -367,6 +387,7 @@ class OpenAIProvider(LLMProvider):
 
     def chat(self, system_prompt: str, messages: list[dict],
              tools: list[dict] | None = None) -> LLMResponse:
+        T("OPENAI-CHAT", f"enter stream={bool(self.on_stream)}")
         try:
             from openai import OpenAI
         except ImportError:
@@ -437,7 +458,9 @@ class OpenAIProvider(LLMProvider):
                     kwargs["extra_body"] = stream_extra
                 return self._chat_stream(client, **kwargs)
             else:
+                T("OPENAI-CHAT", f"non-streaming call model={kwargs.get('model','?')}")
                 response = client.chat.completions.create(**kwargs)
+                T("OPENAI-CHAT", "non-streaming response received")
                 return self._parse_response(response)
         except Exception as e:
             return LLMResponse(
@@ -707,7 +730,10 @@ class OpenAIProvider(LLMProvider):
           - 停滞检测：30s 无事件 → 降级到非流式
           - 内容块类型分发：text / tool_use
           - 异步生成器降级：流式失败 → 回退非流式
+          - 线程级兜底超时：防止 SDK 内部 `for chunk in stream` 阻塞
         """
+        import threading as _threading
+
         content = ""
         tool_calls_acc: dict[int, dict] = {}
         finish_reason = "stop"
@@ -716,74 +742,133 @@ class OpenAIProvider(LLMProvider):
         last_was_text = False
         last_was_tool = False
 
-        try:
-            stream = client.chat.completions.create(**kwargs)
-            for chunk in stream:
-                now = time.time()
+        # ★ 安全兜底：用线程包装流式创建+迭代
+        _timeout = STALL_ACTIVE_TIMEOUT + 30.0  # 120s 总兜底
 
-                # 被动超时：距上次事件超过 30s → 网络停滞
-                if now - last_event_time > STALL_PASSIVE_TIMEOUT:
-                    raise TimeoutError(
-                        f"流式响应被动超时 {STALL_PASSIVE_TIMEOUT}s（距上次事件）")
-                last_event_time = now
+        # 重置取消信号
+        self._cancel_requested = False
+        self._current_stream = None
+        _result_box: list[tuple[str, dict[int, dict], str] | Exception] = []
 
-                if not chunk.choices or len(chunk.choices) == 0:
-                    continue
+        def _stream_worker():
+            try:
+                T("STREAM", f"creating stream model={kwargs.get('model','?')}")
+                _s = client.chat.completions.create(**kwargs)
+                # 保存流引用供 cancel() 中断
+                self._current_stream = _s
+                T("STREAM", "stream created, iterating")
+                _c, _tc, _fr = "", {}, "stop"
+                _last = time.time()
+                _start = time.time()
+                _lw_text = False
+                _lw_tool = False
 
-                delta = chunk.choices[0].delta
-                finish = chunk.choices[0].finish_reason
+                for _chunk in _s:
+                    # v0.5: 检查取消信号
+                    if self._cancel_requested:
+                        T("STREAM", "cancel requested, aborting")
+                        raise RuntimeError("流式请求已取消")
 
-                if finish:
-                    finish_reason = finish
+                    _now = time.time()
 
-                # 文本增量块 → text_delta
-                if delta.content:
-                    # 检测块类型切换：之前是 tool → 现在变成 text
-                    if last_was_tool and not last_was_text:
-                        # tool 块结束 → 通知 agent 执行工具
-                        self._flush_tool_blocks(tool_calls_acc)
-                    last_was_text = True
-                    last_was_tool = False
+                    if _now - _last > STALL_PASSIVE_TIMEOUT:
+                        raise TimeoutError(
+                            f"流式响应被动超时 {STALL_PASSIVE_TIMEOUT}s（距上次事件）")
+                    _last = _now
 
-                    content += delta.content
-                    if self.on_stream:
-                        self.on_stream(delta.content)
+                    if not _chunk.choices or len(_chunk.choices) == 0:
+                        continue
 
-                # 工具调用增量块
-                if delta.tool_calls:
-                    # 检测块类型切换：之前是 text → 现在变成 tool
-                    if last_was_text and not last_was_tool:
-                        # text 块结束 → 通知
+                    _delta = _chunk.choices[0].delta
+                    _finish = _chunk.choices[0].finish_reason
+                    if _finish:
+                        _fr = _finish
+
+                    if _delta.content:
+                        if _lw_tool and not _lw_text:
+                            self._flush_tool_blocks(_tc)
+                        _lw_text = True
+                        _lw_tool = False
+                        _c += _delta.content
+                        if self.on_stream:
+                            self.on_stream(_delta.content)
+                        _start = _now
+
+                    if _delta.tool_calls:
+                        _lw_tool = True
+                        _lw_text = False
+                        for _tc_item in _delta.tool_calls:
+                            _idx = _tc_item.index
+                            if _idx not in _tc:
+                                _tc[_idx] = {"id": "", "name": "", "arguments": ""}
+                            if _tc_item.id:
+                                _tc[_idx]["id"] = _tc_item.id
+                            if _tc_item.function:
+                                if _tc_item.function.name:
+                                    _tc[_idx]["name"] = _tc_item.function.name
+                                if _tc_item.function.arguments:
+                                    _tc[_idx]["arguments"] += _tc_item.function.arguments
+                        _start = _now
+
+                    if _now - _start > STALL_ACTIVE_TIMEOUT:
+                        raise TimeoutError(
+                            f"流式响应主动超时 {STALL_ACTIVE_TIMEOUT}s（无进展）")
+
+                self._current_stream = None
+                _result_box.append((_c, _tc, _fr))
+            except Exception as e:
+                T("STREAM", f"worker exception: {type(e).__name__}: {e}")
+                self._current_stream = None
+                _result_box.append(e)
+
+        t = _threading.Thread(target=_stream_worker, daemon=True)
+        t.start()
+        # 循环 join+检查取消信号（v0.5 缩短检测间隔）
+        while t.is_alive():
+            t.join(timeout=1.0)
+            if self._cancel_requested:
+                # 取消请求时，立即关闭 stream 让线程退出
+                T("STREAM", "cancel detected in join loop")
+                if self._current_stream is not None:
+                    try:
+                        self._current_stream.close()
+                    except Exception:
                         pass
-                    last_was_tool = True
-                    last_was_text = False
+                    self._current_stream = None
+                break
 
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc.id:
-                            tool_calls_acc[idx]["id"] = tc.id
-                        if tc.function:
-                            if tc.function.name:
-                                tool_calls_acc[idx]["name"] = tc.function.name
-                            if tc.function.arguments:
-                                tool_calls_acc[idx]["arguments"] += tc.function.arguments
-
-                # 主动超时：90s 总耗时上限
-                if now - stall_active_start > STALL_ACTIVE_TIMEOUT:
-                    raise TimeoutError(
-                        f"流式响应主动超时 {STALL_ACTIVE_TIMEOUT}s（总耗时）")
-
-        except Exception as stream_err:
-            _log.warning("stream_fallback: %s", stream_err)
+        # 超时判定
+        if not _result_box:
+            T("STREAM", f"TIMEOUT after {_timeout}s, falling back to non-streaming")
+            _log.warning("stream_timeout: thread join timed out after %ss", _timeout)
             kwargs.pop("stream", None)
             kwargs.pop("extra_body", None)
             try:
+                T("STREAM", "non-streaming fallback...")
                 response = client.chat.completions.create(**kwargs)
+                T("STREAM", "non-streaming fallback succeeded")
                 return self._parse_response(response)
-            except Exception as fallback_err:
-                raise fallback_err from stream_err
+            except Exception as fb_err:
+                T("STREAM", f"non-streaming fallback failed: {fb_err}")
+                raise fb_err
+
+        if isinstance(_result_box[0], Exception):
+            err = _result_box[0]
+            T("STREAM", f"worker exception: {type(err).__name__}: {err}")
+            _log.warning("stream_fallback: %s", err)
+            kwargs.pop("stream", None)
+            kwargs.pop("extra_body", None)
+            try:
+                T("STREAM", "non-streaming fallback after exception...")
+                response = client.chat.completions.create(**kwargs)
+                T("STREAM", "non-streaming fallback succeeded")
+                return self._parse_response(response)
+            except Exception as fb_err:
+                T("STREAM", f"fallback failed: {fb_err}")
+                raise fb_err from err
+
+        content, tool_calls_acc, finish_reason = _result_box[0]
+        T("STREAM", f"completed content_len={len(content)} tc={len(tool_calls_acc)}")
 
         # 最后的工具块
         self._flush_tool_blocks(tool_calls_acc)
