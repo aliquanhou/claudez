@@ -202,39 +202,50 @@ body {
   font-size: 10px; color: var(--text3); margin-left: 4px;
 }
 
-/* ── 工具调用卡片（持久化，可复制） ── */
-.tc {
+/* ── 工具调用：对话流失中渲染 ── */
+.tool-stream {
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 6px; font-size: 12px; margin: 4px 0;
+  border-radius: 6px; margin: 4px 0; overflow: hidden;
   font-family: 'SF Mono','Fira Code',monospace;
 }
-.tc-hd {
+.ts-header {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px; border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  padding: 4px 10px; font-size: 12px;
+  background: var(--surface3);
+  border-bottom: 1px solid var(--border);
 }
-.tc-icon { flex-shrink: 0; }
-.tc-name { font-weight: 600; color: var(--accent2); }
-.tc-ts { color: var(--text3); font-size: 10px; margin-left: auto; }
-.tc-status { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
-.tc-status.run { color: var(--yellow); background: rgba(234,179,8,0.1); }
-.tc-status.done { color: var(--green); background: rgba(34,197,94,0.1); }
-.tc-status.fail { color: var(--red); background: rgba(239,68,68,0.1); }
-.tc-args { padding: 4px 8px; background: var(--surface3); font-size: 11px; border-bottom: 1px solid var(--border); }
-.tc-arg { padding: 1px 0; color: var(--text2); }
-.tc-argk { color: var(--text3); }
-.tc-argv { color: var(--text); }
-.tc-body { display: none; padding: 4px 8px; max-height: 300px; overflow-y: auto; font-size: 11px; line-height: 1.45; }
-.tc-body::-webkit-scrollbar { width: 3px; }
-.tc-line { padding: 0; white-space: pre-wrap; word-break: break-all; color: var(--text2); }
-.tc-line:nth-child(even) { background: rgba(255,255,255,0.015); }
-.tc-result-text {
-  padding: 4px 0; white-space: pre-wrap; word-break: break-all;
-  color: var(--text); border-top: 1px solid var(--border); margin-top: 4px;
+.ts-icon { flex-shrink: 0; }
+.ts-name { font-weight: 600; color: var(--accent2); }
+.ts-file { color: var(--accent); font-weight: 500; }
+.ts-time { color: var(--text3); font-size: 10px; margin-left: auto; }
+.ts-body {
+  padding: 2px 0; font-size: 11px; line-height: 1.55;
+  font-family: 'SF Mono','Fira Code',monospace;
 }
-.tc-foot { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-top: 1px solid var(--border); font-size: 10px; }
-.tc-result { color: var(--text3); }
-.tc-dur { color: var(--text3); margin-left: auto; }
+.ts-line {
+  padding: 0 10px; white-space: pre-wrap; word-break: break-all;
+  color: var(--text2);
+}
+.ts-line:nth-child(even) { background: rgba(255,255,255,0.015); }
+.ts-result {
+  padding: 4px 10px; font-size: 11px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+}
+.ts-ok { color: var(--green); }
+.ts-fail { color: var(--red); }
+.ts-file-link {
+  color: var(--accent); text-decoration: none; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(0,212,255,0.1);
+  border: 1px solid rgba(0,212,255,0.2);
+}
+.ts-file-link:hover { background: rgba(0,212,255,0.2); }
+.ts-result-text {
+  width: 100%; color: var(--text2); font-size: 11px;
+  white-space: pre-wrap; word-break: break-all;
+  margin-top: 4px; padding: 4px; background: var(--surface3);
+  border-radius: 4px;
+}
 
 /* ── 工作空间 ── */
 .ws-btn {
@@ -880,85 +891,106 @@ function finishMsg(text) {
   }
 }
 
-// ── 工具调用卡片（持久化，可复制） ──
-var _activeToolCards = {};
-var _activeToolId = 0;
+// ── 工具调用：逐行流式渲染到对话流 ──
+var _toolLineCount = 0;
+var _toolTargetFile = "";
+var _toolStreamBox = null;
+var _toolName = "";
 
 function addToolCard(name, args) {
+  _toolName = name;
+  _toolLineCount = 0;
+  _toolTargetFile = (args && args.file_path) || (args && args.path) || "";
   var ts = new Date().toLocaleTimeString();
-  // 参数摘要
-  var argStr = '';
-  if (args) {
-    var keys = Object.keys(args);
-    for (var i = 0; i < keys.length; i++) {
-      var val = args[keys[i]];
-      if (typeof val === 'string' && val.length > 80) val = val.slice(0, 80) + '...';
-      argStr += '<div class="tc-arg"><span class="tc-argk">' + escHtml(keys[i]) + '</span>: <span class="tc-argv">' + escHtml(JSON.stringify(val)) + '</span></div>';
-    }
-  }
-  var card = document.createElement('div');
-  var cid = Date.now();
-  card.className = 'msg agent';
-  card.id = 'tc-' + cid;
-  card.innerHTML = '<div class="tc" data-tool="' + escHtml(name) + '">'
-    + '<div class="tc-hd">'
-    + '<span class="tc-icon">🔧</span>'
-    + '<span class="tc-name">' + escHtml(name) + '</span>'
-    + '<span class="tc-ts">' + ts + '</span>'
-    + '<span class="tc-status run">⏳ 执行中...</span>'
-    + '</div>'
-    + (argStr ? '<div class="tc-args">' + argStr + '</div>' : '')
-    + '<div class="tc-body"></div>'
-    + '<div class="tc-foot"><span class="tc-result"></span><span class="tc-dur"></span></div>'
+
+  // 创建流式容器块
+  var container = document.createElement('div');
+  container.className = 'msg agent';
+  var cid = 'ts-' + Date.now();
+  container.id = cid;
+
+  var headerHtml = '<div class="tool-stream">'
+    + '<div class="ts-header"><span class="ts-icon">🔧</span> <span class="ts-name">' + escHtml(name) + '</span>'
+    + (_toolTargetFile ? ' → <span class="ts-file">' + escHtml(_toolTargetFile) + '</span>' : '')
+    + ' <span class="ts-time">' + ts + '</span></div>'
+    + '<div class="ts-body" id="ts-body-' + cid + '"></div>'
     + '</div>';
-  msgs.appendChild(card);
+
+  container.innerHTML = headerHtml;
+  msgs.appendChild(container);
   scrollBtm();
-  _activeToolCards[cid] = card;
-  _activeToolId = cid;
+
+  _toolStreamBox = document.getElementById('ts-body-' + cid);
 }
 
 function appendToolOutput(name, line) {
-  var card = _activeToolCards[_activeToolId];
-  if (!card) return;
-  var body = card.querySelector('.tc-body');
-  if (!body) return;
-  body.style.display = 'block';
+  if (!_toolStreamBox) return;
+  _toolLineCount++;
+
   var lineDiv = document.createElement('div');
-  lineDiv.className = 'tc-line';
+  lineDiv.className = 'ts-line';
   lineDiv.textContent = line;
-  body.appendChild(lineDiv);
-  while (body.children.length > 500) body.removeChild(body.firstChild);
-  scrollBtm();
+  _toolStreamBox.appendChild(lineDiv);
+
+  // 每 5 条滚动一次
+  if (_toolLineCount % 5 === 0) scrollBtm();
+
+  // 限流：最多显示 500 行
+  while (_toolStreamBox.children.length > 500) {
+    _toolStreamBox.removeChild(_toolStreamBox.firstChild);
+  }
 }
 
 function finishToolCard(name, resultText, success, durationMs) {
-  var card = _activeToolCards[_activeToolId];
-  if (!card) return;
-  delete _activeToolCards[_activeToolId];
-  var statusEl = card.querySelector('.tc-status');
-  if (statusEl) {
-    statusEl.textContent = success ? '✅ 完成' : '❌ 失败';
-    statusEl.className = 'tc-status ' + (success ? 'done' : 'fail');
+  if (!_toolStreamBox) {
+    // fallback: 没有流式容器时创建简单提示
+    addMsg('agent', (success ? '✅ ' : '❌ ') + name + ' (' + (durationMs||0).toFixed(0) + 'ms)');
+    return;
   }
-  var durEl = card.querySelector('.tc-dur');
-  if (durEl) durEl.textContent = durationMs ? ' (' + durationMs.toFixed(0) + 'ms)' : '';
-  // Append result text to body
-  if (resultText && resultText.length > 0) {
-    var body = card.querySelector('.tc-body');
-    if (!body) return;
-    // Only show result if it's not already shown as output
-    var hasContent = body.children.length > 0;
-    var resultPreview = resultText;
-    if (resultPreview.length > 2000) resultPreview = resultPreview.slice(0, 2000) + '\n... (截断)';
-    if (!hasContent || resultText.length > 80) {
-      var pre = document.createElement('div');
-      pre.className = 'tc-result-text';
-      pre.textContent = resultPreview;
-      body.appendChild(pre);
+
+  // 结果行
+  var resultDiv = document.createElement('div');
+  resultDiv.className = 'ts-result ' + (success ? 'ts-ok' : 'ts-fail');
+  var displayText = success ? '✅ 完成' : '❌ 失败';
+  if (durationMs) displayText += ' (' + durationMs.toFixed(0) + 'ms)';
+
+  // 检测文件路径 → 转为可点击链接
+  if (resultText) {
+    var displayResult = resultText;
+    // 匹配 → 文件路径 或 → xxx 模式
+    var fileMatch = resultText.match(/→\s*([^\s]+\.\w+)/);
+    var fileLink = '';
+    if (fileMatch) {
+      var fp = fileMatch[1].trim();
+      if (_toolTargetFile) fp = _toolTargetFile;
+      var fullPath = 'file:///' + fp.replace(/\\/g, '/').replace(/^\//, '');
+      if (fp.includes(':') || fp.startsWith('/')) {
+        fullPath = 'file:///' + fp.replace(/\\/g, '/');
+      } else {
+        // 相对路径 → 拼接工作空间路径
+        fullPath = 'file:///D:/ForgeX/' + fp.replace(/\\/g, '/');
+      }
+      fileLink = ' <a href="' + fullPath + '" target="_blank" class="ts-file-link" title="点击打开文件">📄 ' + escHtml(fp) + '</a>';
     }
+    resultDiv.innerHTML = displayText + fileLink + '<div class="ts-result-text">' + escHtml(resultText) + '</div>';
+  } else {
+    resultDiv.textContent = displayText;
   }
+  _toolStreamBox.parentElement.appendChild(resultDiv);
+
+  // 滚动到底部
   scrollBtm();
+
+  // 清理状态
+  _toolStreamBox = null;
+  _toolName = "";
+
+  // ★ 自动刷新文件树
+  if (success && (name === 'write' || name === 'edit')) {
+    setTimeout(function() { loadFileTree(3); }, 500);
+  }
 }
+
 
 // ── 工作流渲染器 ──
 
