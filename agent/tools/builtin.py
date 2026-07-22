@@ -259,37 +259,44 @@ def web(url: str, method: str = "GET", data: str = "", headers: str = "") -> str
 def web_search(query: str, max_results: int = 5) -> str:
     """搜索网络信息（使用 DuckDuckGo）。
 
+    适合查找文档、错误信息、技术方案等。返回标题+链接+摘要。
+
     Args:
         query: 搜索关键词
-        max_results: 最大结果数
+        max_results: 最大结果数（1-10）
     """
-    import urllib.parse
-    import urllib.request
-    import json
+    try:
+        # duckduckgo_search >= 7.0 已改名为 ddgs
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+    except ImportError:
+        return "[错误] 需要安装: pip install duckduckgo_search"
 
-    encoded = urllib.parse.quote(query)
-    url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_html=1"
+    effective_max = max(1, min(max_results, 10))
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ClaudeZ/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = []
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=effective_max))
 
-            # Abstract
-            if data.get("AbstractText"):
-                results.append(f"摘要: {data['AbstractText']}")
-                if data.get("AbstractURL"):
-                    results.append(f"来源: {data['AbstractURL']}")
+        if not results:
+            return "(无搜索结果)"
 
-            # Related topics
-            for topic in data.get("RelatedTopics", [])[:max_results]:
-                if "Text" in topic:
-                    results.append(f"- {topic['Text']}")
-                    if "FirstURL" in topic:
-                        results.append(f"  {topic['FirstURL']}")
+        lines = []
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "").strip()
+            href = r.get("href", "").strip()
+            body = r.get("body", "").strip()
+            if not title:
+                continue
+            lines.append(f"{i}. {title}")
+            lines.append(f"   {href}")
+            if body:
+                lines.append(f"   {body[:200]}")
 
-            return "\n".join(results) if results else "(无搜索结果)"
+        return "\n".join(lines) if lines else "(无搜索结果)"
+
     except Exception as e:
         return f"[搜索失败] {e}"
 
