@@ -27,6 +27,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from agent._trace import T
+
 _log = logging.getLogger("forgex.web")
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -104,9 +106,11 @@ def _build_app(agent) -> FastAPI:
 
         def _run():
             try:
+                T("SRV-RUN", "entered _run thread")
                 # 立即推送 thought 和状态
                 _broadcast("thought", {"text": "正在处理你的请求..."})
                 _broadcast("status_update", _read_status(agent))
+                T("SRV-RUN", "thought broadcast done")
 
                 # 挂载回调
                 _orig_on_stream = agent.on_stream
@@ -123,11 +127,13 @@ def _build_app(agent) -> FastAPI:
                         return ""
 
                 def _on_stream(chunk):
+                    T("SRV-CB", f"on_stream chunk_len={len(chunk)}")
                     _broadcast("token", {"text": chunk})
                     if _orig_on_stream:
                         _orig_on_stream(chunk)
 
                 def _on_tool_start(name, args):
+                    T("SRV-CB", f"on_tool_start name={name}")
                     _broadcast("tool_start", {"name": name, "args": args})
                     _broadcast("status_update", _read_status(agent))
                     if name in ("write", "edit"):
@@ -138,6 +144,7 @@ def _build_app(agent) -> FastAPI:
                         _orig_on_tool_start(name, args)
 
                 def _on_tool_call(name, args, result, duration):
+                    T("SRV-CB", f"on_tool_call name={name} success={not result.startswith('[')}")
                     success = not result.startswith("[")
                     _broadcast("tool_result", {
                         "name": name, "duration_ms": duration,
@@ -158,18 +165,23 @@ def _build_app(agent) -> FastAPI:
                         _orig_on_tool_call(name, args, result, duration)
 
                 def _on_message(role, content):
+                    T("SRV-CB", f"on_message role={role} len={len(content)}")
                     if role == "assistant":
                         _broadcast("status_update", _read_status(agent))
                     if _orig_on_message:
                         _orig_on_message(role, content)
 
+                T("SRV-RUN", "mounting callbacks")
                 agent.on_stream = _on_stream
                 agent.on_tool_start = _on_tool_start
                 agent.on_tool_call = _on_tool_call
                 agent.on_message = _on_message
+                T("SRV-RUN", "callbacks mounted, calling agent.run()")
 
                 # 执行（同步，无内部线程）
+                T("SRV-RUN", "agent.run() starting...")
                 result = agent.run(body.text)
+                T("SRV-RUN", f"agent.run() returned len={len(result)}")
 
                 # 恢复回调
                 agent.on_stream = _orig_on_stream
@@ -178,6 +190,7 @@ def _build_app(agent) -> FastAPI:
                 agent.on_message = _orig_on_message
 
                 # 推送完成
+                T("SRV-RUN", f"broadcasting result prefix={result[:60]}")
                 _broadcast("status_update", _read_status(agent))
                 if result.startswith("["):
                     _broadcast("error", {"text": result})
@@ -185,8 +198,10 @@ def _build_app(agent) -> FastAPI:
                     _broadcast("done", {"text": result})
 
             except Exception as e:
+                T("SRV-RUN", f"EXCEPTION: {type(e).__name__}: {e}")
                 _broadcast("error", {"text": str(e)})
             finally:
+                T("SRV-RUN", "release busy lock")
                 _agent_busy_lock.release()
 
         thread = threading.Thread(target=_run, daemon=True)
@@ -209,6 +224,25 @@ def _build_app(agent) -> FastAPI:
                               for t in tools]}
         except Exception as e:
             return {"tools": [], "error": str(e)}
+
+    # ── 文件树 ──
+    @app.get("/api/files")
+    async def api_files():
+        try:
+            scanner = getattr(agent, 'workspace_scanner', None)
+            if scanner is None:
+                return {"tree": {}, "file_count": 0, "project_type": ""}
+            info = scanner.get_info()
+            return {
+                "tree": info.file_tree if info else {},
+                "file_count": info.file_count if info else 0,
+                "dir_count": info.dir_count if info else 0,
+                "project_type": info.project_type if info else "",
+                "languages": info.languages if info else [],
+                "key_files": info.key_files if info else [],
+            }
+        except Exception as e:
+            return {"tree": {}, "file_count": 0, "error": str(e)}
 
     return app
 
