@@ -91,7 +91,7 @@ def _build_app(agent) -> FastAPI:
 
         return EventSourceResponse(event_generator())
 
-    # ── 发送消息（使用 run_stream） ──
+    # ── 发送消息（直接回调，无 run_stream 线程） ──
     @app.post("/api/send")
     async def api_send(body: SendBody):
         if not body.text or not body.text.strip():
@@ -99,41 +99,91 @@ def _build_app(agent) -> FastAPI:
 
         def _run():
             try:
-                for event in agent.run_stream(body.text):
-                    ev_type = event.get("type", "")
-                    ev_data = event.get("data", {})
+                # 立即推送 thought 和状态
+                _broadcast("thought", {"text": "正在处理你的请求..."})
+                _broadcast("status_update", _read_status(agent))
 
-                    if ev_type == "text":
-                        _broadcast("token", ev_data)
-                    elif ev_type == "thought":
-                        _broadcast("thought", ev_data)
-                    elif ev_type == "plan":
-                        _broadcast("plan", ev_data)
-                    elif ev_type == "step_start":
-                        _broadcast("step_start", ev_data)
-                    elif ev_type == "step_diff":
-                        _broadcast("step_diff", ev_data)
-                    elif ev_type == "step_done":
-                        _broadcast("step_done", ev_data)
-                    elif ev_type == "tool_call":
-                        _broadcast("tool_start", ev_data)
-                    elif ev_type == "tool_result":
-                        _broadcast("tool_result", ev_data)
-                    elif ev_type == "progress":
-                        _broadcast("progress", ev_data)
-                    elif ev_type == "status":
-                        _broadcast("status_update", ev_data)
-                    elif ev_type == "done":
-                        _broadcast("done", ev_data)
-                    elif ev_type == "error":
-                        _broadcast("error", ev_data)
+                # 挂载回调
+                _orig_on_stream = agent.on_stream
+                _orig_on_tool_start = agent.on_tool_start
+                _orig_on_tool_call = agent.on_tool_call
+                _orig_on_message = agent.on_message
+                _changed_files = {}
+
+                def _snap(fp):
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="replace") as _f:
+                            return _f.read()
+                    except Exception:
+                        return ""
+
+                def _on_stream(chunk):
+                    _broadcast("token", {"text": chunk})
+                    if _orig_on_stream:
+                        _orig_on_stream(chunk)
+
+                def _on_tool_start(name, args):
+                    _broadcast("tool_start", {"name": name, "args": args})
+                    _broadcast("status_update", _read_status(agent))
+                    if name in ("write", "edit"):
+                        fp = args.get("file_path", "")
+                        if fp and fp not in _changed_files:
+                            _changed_files[fp] = _snap(fp)
+                    if _orig_on_tool_start:
+                        _orig_on_tool_start(name, args)
+
+                def _on_tool_call(name, args, result, duration):
+                    success = not result.startswith("[")
+                    _broadcast("tool_result", {
+                        "name": name, "duration_ms": duration,
+                        "success": success,
+                    })
+                    if name in ("write", "edit") and success:
+                        fp = args.get("file_path", "")
+                        if fp in _changed_files:
+                            after = _snap(fp)
+                            _broadcast("step_diff", {
+                                "file": fp,
+                                "before": _changed_files[fp],
+                                "after": after,
+                            })
+                            del _changed_files[fp]
+                    _broadcast("status_update", _read_status(agent))
+                    if _orig_on_tool_call:
+                        _orig_on_tool_call(name, args, result, duration)
+
+                def _on_message(role, content):
+                    if role == "assistant":
+                        _broadcast("status_update", _read_status(agent))
+                    if _orig_on_message:
+                        _orig_on_message(role, content)
+
+                agent.on_stream = _on_stream
+                agent.on_tool_start = _on_tool_start
+                agent.on_tool_call = _on_tool_call
+                agent.on_message = _on_message
+
+                # 执行（同步，无内部线程）
+                result = agent.run(body.text)
+
+                # 恢复回调
+                agent.on_stream = _orig_on_stream
+                agent.on_tool_start = _orig_on_tool_start
+                agent.on_tool_call = _orig_on_tool_call
+                agent.on_message = _orig_on_message
+
+                # 推送完成
+                _broadcast("status_update", _read_status(agent))
+                if result.startswith("["):
+                    _broadcast("error", {"text": result})
+                else:
+                    _broadcast("done", {"text": result})
 
             except Exception as e:
                 _broadcast("error", {"text": str(e)})
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
-
         return {"status": "ok"}
 
     # ── 状态快照 ──
