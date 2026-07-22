@@ -1,5 +1,35 @@
 # Changelog
 
+## [forgex-v0.5.0] - 2026-07-22
+
+### Added
+- **LLM 配置实时生效**
+  - `POST /api/config/llm`：动态修改模型/温度/Max Tokens/Provider
+  - `GET /api/config`：获取当前配置快照
+  - 前端交互面板（模型下拉 / 温度滑块 / Max Tokens 输入）
+  - 配置变更后无需重启，下次 LLM 调用即用新参数
+- **停止执行**
+  - `POST /api/stop`：中断正在执行的 Agent
+  - `Provider.cancel()`：关闭流式 HTTP 连接，终止 LLM 请求
+  - `Agent.stop()` → `provider.cancel()` 级联中断
+  - 前端停止按钮真实调用后端，代替仅前端状态重置
+- **全局错误捕获**
+  - `window.onerror` + `unhandledrejection` 捕获 JS 异常
+  - 错误信息写入右侧日志面板
+
+### Fixed
+- SSE `error` 事件 `JSON.parse(e.data)` 崩溃（断开时 data 为空）
+- 文件树/工具列表加载卡"扫描中"（新增 3 次重试，间隔递增）
+- `DOMContentLoaded` 时序问题 → IIFE 立即执行
+- `pollStatic()` 重复 `try` 块导致工具加载逻辑失效
+
+## [forgex-v0.4.1] - 2026-07-22
+
+### Added
+- **动态端口**：`_find_available_port()` 从 8080 开始扫描可用端口
+- **自动打开浏览器**：`webbrowser.open(url)`
+- 版本统一更新至 0.4.1
+
 ## [forgex-v0.4.0] - 2026-07-22
 
 ### Added
