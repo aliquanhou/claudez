@@ -79,6 +79,7 @@ DEFAULT_CONFIG = {
     "max_tool_calls_per_turn": 25,
     "max_consecutive_errors": 5,
     "enable_adaptations": True,
+    "api_timeout": 30,              # LLM API HTTP 超时（秒）
     "max_retries": 3,
     "retry_base_delay_ms": 1000,
     "disable_thinking": True,       # DeepSeek: 关闭 thinking 模式

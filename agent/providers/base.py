@@ -153,6 +153,9 @@ class LLMProvider(ABC):
         self.enable_caching = config.get("enable_caching", False)
         self.cache_prefix: list[str] = []
 
+        # API 调用超时（秒），防止请求挂起
+        self.api_timeout = config.get("api_timeout", 30.0)
+
         # 流式回调
         self.on_stream: Callable[[str], None] | None = None
 
@@ -255,7 +258,7 @@ class AnthropicProvider(LLMProvider):
                 stop_reason="error",
             )
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client = anthropic.Anthropic(api_key=self.api_key, timeout=self.api_timeout)
 
         api_messages = []
         for msg in messages:
@@ -357,7 +360,7 @@ class OpenAIProvider(LLMProvider):
                 stop_reason="error",
             )
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.api_timeout)
 
         # 构建消息（保留 tool_calls / tool_call_id 等字段）
         api_messages = [{"role": "system", "content": system_prompt}]
