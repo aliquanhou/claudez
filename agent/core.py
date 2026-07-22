@@ -808,6 +808,15 @@ class Agent:
                 custom_sections.append(("认知上下文", prompt_text))
                 _log.debug("cognition context compiled len=%d", len(prompt_text))
 
+        # v0.5.2: 主机工具链探测 — 注入本机可用的开发工具信息
+        try:
+            from .tools.env_probe import get_env_probe
+            _summary = get_env_probe().get_summary()
+            if _summary:
+                custom_sections.append(("宿主环境", _summary))
+        except Exception:
+            pass
+
         context = PromptContext(
             user_id=self.session.id,
             tools=get_all_tools(),

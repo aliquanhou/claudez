@@ -430,6 +430,13 @@ body {
       <span id="cfgStatus" style="font-size:10px;color:var(--text3);align-self:center;"></span>
     </div>
   </div>
+  <div class="sec" id="toolChainSec">
+    <div class="sec-title" style="cursor:pointer;user-select:none;" onclick="toggleToolChain()">🔧 主机工具链 <span id="toolChainArrow" style="font-size:9px;margin-left:4px;">▶</span></div>
+    <div id="toolChainBody" style="display:none;">
+      <div id="toolChainList" style="font-size:11px;color:var(--text3);">探测中...</div>
+      <div style="margin-top:3px;font-size:10px;color:var(--text3);" id="toolChainSummary"></div>
+    </div>
+  </div>
   <div class="sec">
     <div class="sec-title">📋 任务</div>
     <div id="taskList"><span style="font-size:11px;color:var(--text3);">无活跃任务</span></div>
@@ -1170,6 +1177,40 @@ async function pollStatic() {
     loadLLMConfig(),
     loadToolList(3),
   ]);
+}
+
+// ── 主机工具链 ──
+function toggleToolChain() {
+  var body = document.getElementById('toolChainBody');
+  var arrow = document.getElementById('toolChainArrow');
+  if (!body || !arrow) return;
+  var expanded = body.style.display !== 'none';
+  body.style.display = expanded ? 'none' : 'block';
+  arrow.textContent = expanded ? '▶' : '▼';
+  if (!expanded) loadToolChain();
+}
+
+async function loadToolChain() {
+  var container = document.getElementById('toolChainList');
+  if (!container) return;
+  try {
+    var r = await fetch('/api/env/tools');
+    var d = await r.json();
+    if (d.error) throw new Error(d.error);
+    var summaryEl = document.getElementById('toolChainSummary');
+    if (summaryEl) { summaryEl.textContent = d.total_available + ' / ' + Object.keys(d.tools).length + ' 可用'; }
+    var html = '';
+    var tools = d.tools || {};
+    var names = Object.keys(tools).sort();
+    for (var i = 0; i < names.length; i++) {
+      var t = tools[names[i]];
+      var label = t.available ? (t.name + ' ' + (t.version || '')) : t.name;
+      html += '<div class="tool-item" style="font-size:11px;"><span class="dot" style="background:' + (t.available ? 'var(--green)' : 'var(--text3)') + ';width:4px;height:4px;"></span>' + escHtml(label) + '</div>';
+    }
+    container.innerHTML = html || '<div style="font-size:11px;color:var(--text3);">未探测到工具</div>';
+  } catch(err) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--red);">探测失败</div>';
+  }
 }
 
 async function loadToolList(retries) {

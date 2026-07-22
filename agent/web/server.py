@@ -303,6 +303,17 @@ def _build_app(agent) -> FastAPI:
         T("SRV-STOP", "agent stopped")
         return {"status": "stopped"}
 
+    # ── 主机工具链探测 ──
+    @app.get("/api/env/tools")
+    async def api_env_tools():
+        try:
+            from agent.tools.env_probe import get_env_probe
+            probe = get_env_probe()
+            data = probe.to_dict()
+            return data
+        except Exception as e:
+            return {"os": "", "total_available": 0, "tools": {}, "error": str(e)}
+
     return app
 
 
