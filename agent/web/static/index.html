@@ -614,19 +614,21 @@ function connectSSE() {
     sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
     inputHint.textContent = '就绪'; inp.focus();
   });
-  evtSrc.addEventListener('error', function(e) {
-    if (streamingTimer) clearTimeout(streamingTimer);
-    const d = JSON.parse(e.data); finishMsg('[错误] ' + d.text);
-    statusDot.className = 'dot'; streaming = false; isSending = false;
-    sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
-    inputHint.textContent = '错误';
-  });
+  // 注意：SSE 'error' 事件用 onerror 处理（line 625），不用 addEventListener
+  // 因为 addEventListener('error') 中的 e.data 在连接断开时为空，JSON.parse 会抛异常
   evtSrc.onerror = () => {
     evtSrc.close();
     evtSrc = null;
     var sConn = document.getElementById('sConn');
     if (sConn) sConn.innerHTML = '<span class="s-dot yellow"></span>重连中';
     log('w', 'SSE 连接断开，2s 后重连');
+    // 如果正在发送，重置状态
+    if (streaming || isSending) {
+      streaming = false; isSending = false;
+      sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
+      statusDot.className = 'dot'; inputHint.textContent = '连接断开';
+      finishMsg('[连接断开]');
+    }
     sseReconnectTimer = setTimeout(connectSSE, 2000);
   };
 }
@@ -973,24 +975,42 @@ function log(level, msg) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ── 文件树 ──
+// ── 文件树 (带重试) ──
 let fileTreeData = {};
 
-async function loadFileTree() {
-  try {
-    const r = await fetch('/api/files'); const d = await r.json();
-    if (d.tree) fileTreeData = d.tree;
-    renderFileTree(d.tree || {}, 'projectTree');
-    // 更新 header 信息
-    if (d.file_count) {
-      document.getElementById('filesCount').textContent = d.file_count + ' 文件';
+async function loadFileTree(retries) {
+  if (retries === undefined) retries = 3;
+  var container = document.getElementById('projectTree');
+  if (!container) return;
+  for (var attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) container.innerHTML = '<div class="tree-item" style="color:var(--text3);font-size:11px;">重试 ' + attempt + '/' + retries + '...</div>';
+    try {
+      var r = await fetch('/api/files');
+      var d = await r.json();
+      if (d.error) throw new Error(d.error);
+      if (d.tree) fileTreeData = d.tree;
+      if (d.tree && Object.keys(d.tree).length > 0) {
+        renderFileTree(d.tree, 'projectTree');
+      } else {
+        container.innerHTML = '<div class="tree-item" style="color:var(--text3);font-size:11px;">' + (d.file_count || 0) + ' 个文件</div>';
+      }
+      if (d.file_count) {
+        document.getElementById('filesCount').textContent = d.file_count + ' 文件';
+      }
+      if (d.project_type) {
+        document.getElementById('projectType').textContent = d.project_type;
+        var ptr = document.getElementById('projectTypeRow');
+        if (ptr) ptr.style.display = 'block';
+      }
+      return; // 成功
+    } catch(err) {
+      if (attempt < retries) {
+        await new Promise(function(r) { setTimeout(r, 1000 * (attempt + 1)); });
+      } else {
+        container.innerHTML = '<div class="tree-item" style="color:var(--red);font-size:11px;">加载失败: ' + err.message + '</div>';
+      }
     }
-    if (d.project_type) {
-      document.getElementById('projectType').textContent = d.project_type;
-      var ptr = document.getElementById('projectTypeRow');
-      if (ptr) ptr.style.display = 'block';
-    }
-  } catch(_) {}
+  }
 }
 
 function renderFileTree(tree, containerId, pathPrefix, containerEl) {
@@ -1091,8 +1111,8 @@ function insertAtCursor(text) {
 
 // ── LLM 配置 (v0.5) ──
 
-// 温度滑块联动
-document.addEventListener('DOMContentLoaded', function() {
+// 温度滑块联动（脚本在 body 底部，DOM 已就绪）
+(function() {
   var slider = document.getElementById('cfgTemp');
   var valSpan = document.getElementById('cfgTempVal');
   if (slider && valSpan) {
@@ -1100,7 +1120,7 @@ document.addEventListener('DOMContentLoaded', function() {
       valSpan.textContent = parseFloat(this.value).toFixed(1);
     });
   }
-});
+})();
 
 async function loadLLMConfig() {
   try {
@@ -1143,19 +1163,41 @@ async function applyLLMConfig() {
   }
 }
 
-// ── 静态数据轮询 ──
+// ── 静态数据轮询 (并行加载，出错不影响其他) ──
 async function pollStatic() {
-  loadFileTree();
-  loadLLMConfig();
-  try {
-  try {
-    const r = await fetch('/api/tools'); const t = await r.json();
-    if (t.tools && t.tools.length > 0) {
-      document.getElementById('toolList').innerHTML = t.tools.slice(0, 10).map(function(tl) {
-        return '<div class="tool-item"><span class="dot"></span>' + escHtml(tl.name) + '</div>';
-      }).join('');
+  await Promise.all([
+    loadFileTree(3),
+    loadLLMConfig(),
+    loadToolList(3),
+  ]);
+}
+
+async function loadToolList(retries) {
+  if (retries === undefined) retries = 3;
+  var container = document.getElementById('toolList');
+  if (!container) return;
+  for (var attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) container.innerHTML = '<div class="tool-item"><span class="dot" style="background:var(--yellow);"></span>重试...</div>';
+    try {
+      var r = await fetch('/api/tools');
+      var t = await r.json();
+      if (t.error) throw new Error(t.error);
+      if (t.tools && t.tools.length > 0) {
+        container.innerHTML = t.tools.slice(0, 12).map(function(tl) {
+          return '<div class="tool-item"><span class="dot"></span>' + escHtml(tl.name) + '</div>';
+        }).join('');
+      } else {
+        container.innerHTML = '<div class="tool-item" style="color:var(--text3);">无工具</div>';
+      }
+      return;
+    } catch(err) {
+      if (attempt < retries) {
+        await new Promise(function(r) { setTimeout(r, 1000 * (attempt + 1)); });
+      } else {
+        container.innerHTML = '<div class="tool-item" style="color:var(--red);">加载失败</div>';
+      }
     }
-  } catch(_) {}
+  }
 }
 
 // ── 快捷键 ──
@@ -1176,6 +1218,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && streaming) { stopStream(); }
   if (e.ctrlKey && e.key === 'k') { e.preventDefault(); clearChat(); }
   if (e.ctrlKey && e.key === 'l') { e.preventDefault(); toggleTheme(); }
+});
+
+// ── 全局错误捕获 ──
+window.onerror = function(msg, src, line, col, err) {
+  log('e', 'JS错误: ' + msg + ' (' + (src||'').split('/').pop() + ':' + line + ')');
+  return false;
+};
+window.addEventListener('unhandledrejection', function(e) {
+  log('e', 'Promise错误: ' + (e.reason || ''));
 });
 
 // ── 初始化 ──
