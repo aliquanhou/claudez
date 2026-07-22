@@ -231,8 +231,8 @@ class WorkspaceScanner:
         languages = self._detect_languages(files)
         key_files = self._find_key_files(files, project_type)
 
-        # 构建文件树（限制深度2用于快速展示）
-        file_tree = self._build_file_tree(files, max_depth=2)
+        # 构建文件树（限制深度4用于快速展示）
+        file_tree = self._build_file_tree(files, max_depth=4)
 
         self._info = WorkspaceInfo(
             root_path=str(self.root_path),
