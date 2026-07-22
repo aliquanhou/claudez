@@ -38,21 +38,55 @@ def read(file_path: str, head: int = 0, tail: int = 0) -> str:
     elif tail > 0:
         lines = lines[-tail:]
 
+    # 流式推送每行
+    try:
+        from .registry import get_stream_callback
+        cb = get_stream_callback()
+        if cb and len(lines) > 1:
+            for i, ln in enumerate(lines):
+                cb(f"  {i+1:>4d}  {ln.rstrip()}")
+    except Exception:
+        pass
+
     return "".join(lines)
 
 
 @tool(category="file", timeout=30, require_confirmation=True)
 def write(file_path: str, content: str) -> str:
-    """写入文件（自动创建目录）。
+    """写入文件（自动创建目录，逐行流式推送）。
 
     Args:
         file_path: 文件路径
         content: 文件内容
     """
+    import time as _time
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 获取流式回调（如果存在）
+    stream_cb = None
+    try:
+        from .registry import get_stream_callback
+        stream_cb = get_stream_callback()
+    except Exception:
+        pass
+
+    lines = content.splitlines()
+    total = len(lines)
+
+    # 流式推送每行到前端
+    if stream_cb:
+        for i, line in enumerate(lines):
+            stream_cb(f"  {i+1:>4d}  {line}")
+            # 每 50 行小休眠，让前端有时间渲染
+            if i > 0 and i % 50 == 0:
+                _time.sleep(0.01)
+        stream_cb(f"[进度] {total} 行写入完成")
+
+    # 实际写入
     path.write_text(content, encoding="utf-8")
-    return f"[完成] 已写入 {len(content)} 字节 → {file_path}"
+
+    return f"[完成] 已写入 {total} 行 ({len(content)} 字节) → {file_path}"
 
 
 @tool(category="file", timeout=30)
