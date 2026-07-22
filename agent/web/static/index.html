@@ -248,6 +248,17 @@ body {
 .plan-card .pbar { margin-top: 6px; height: 3px; background: var(--surface3); border-radius: 2px; overflow: hidden; }
 .plan-card .pbar .pf { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent3)); border-radius: 2px; transition: width 0.5s; }
 
+/* ── Diff 视图 ── */
+.diff-view { font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; line-height: 1.5; margin: 4px 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.diff-ln { padding: 0 8px; display: flex; gap: 6px; white-space: pre; }
+.diff-ln .diff-num { color: var(--text3); width: 24px; text-align: right; flex-shrink: 0; user-select: none; }
+.diff-ln .diff-op { width: 14px; flex-shrink: 0; font-weight: 700; }
+.diff-rm { background: rgba(239,68,68,0.08); }
+.diff-rm .diff-op { color: var(--red); }
+.diff-add { background: rgba(34,197,94,0.08); }
+.diff-add .diff-op { color: var(--green); }
+.diff-eq { background: transparent; color: var(--text2); }
+
 /* ── 输入区 ── */
 .input-area {
   padding: 8px 14px; border-top: 1px solid var(--border);
@@ -445,6 +456,7 @@ body {
 <div class="statusbar">
   <div class="s-item" id="sConn"><span class="s-dot green"></span>已连接</div>
   <div class="s-item">阶段: <span class="s-val" id="sPhase">—</span></div>
+  <div class="s-item">进度: <span class="s-val" id="sProgress">—</span></div>
   <div class="s-item">Token: <span class="s-val" id="sTokens">0</span></div>
   <div class="s-item" style="margin-left:auto;">耗时: <span class="s-val" id="sDuration">—</span></div>
 </div>
@@ -521,6 +533,33 @@ function connectSSE() {
     log(d.success ? 'i' : 'w', (d.success ? '✓' : '✗') + ' ' + d.name + ' (' + d.duration_ms.toFixed(0) + 'ms)');
   });
   evtSrc.addEventListener('status_update', e => { updateDash(JSON.parse(e.data)); });
+
+  // ── 工作流事件 ──
+  evtSrc.addEventListener('thought', function(e) {
+    var d = JSON.parse(e.data);
+    addThought(d.text);
+  });
+  evtSrc.addEventListener('plan', function(e) {
+    var d = JSON.parse(e.data);
+    var steps = d.steps || [];
+    addPlanCard(steps);
+  });
+  evtSrc.addEventListener('step_start', function(e) {
+    var d = JSON.parse(e.data);
+    addStepStatus(d.step, d.description, 'running');
+  });
+  evtSrc.addEventListener('step_diff', function(e) {
+    var d = JSON.parse(e.data);
+    addDiffView(d.file, d.before || '', d.after || '', d.action || 'edit');
+  });
+  evtSrc.addEventListener('step_done', function(e) {
+    var d = JSON.parse(e.data);
+    addStepStatus(d.step, d.description || d.result || '', 'done');
+  });
+  evtSrc.addEventListener('progress', function(e) {
+    var d = JSON.parse(e.data);
+    updateProgress(d.current, d.total);
+  });
   evtSrc.addEventListener('done', function(e) {
     if (streamingTimer) clearTimeout(streamingTimer);
     const d = JSON.parse(e.data); finishMsg(d.text);
@@ -680,6 +719,102 @@ function addToolBadge(name, status) {
   var label = status === 'run' ? '>' : status === 'ok' ? 'OK' : 'ERR';
   var span = document.createElement('span'); span.className = cls; span.textContent = label + ' ' + name;
   b.appendChild(span);
+}
+
+// ── 工作流渲染器 ──
+
+function addThought(text) {
+  var el = document.getElementById('curThought');
+  if (!el) {
+    var d = document.createElement('div'); d.className = 'msg agent'; d.id = 'curThought';
+    d.innerHTML = '<div class="bubble" style="color:var(--text2);font-style:italic;"><span id="thoughtText"></span></div>';
+    msgs.appendChild(d);
+    el = document.getElementById('thoughtText');
+  }
+  el.textContent = text;
+  scrollBtm();
+}
+
+function addPlanCard(steps) {
+  // 移除旧的计划卡片
+  var old = document.getElementById('planCard');
+  if (old) old.remove();
+  var d = document.createElement('div'); d.className = 'plan-card'; d.id = 'planCard';
+  var html = '<div class="ptitle">📋 执行计划 (' + steps.length + ' 步)</div>';
+  for (var i = 0; i < steps.length; i++) {
+    var s = steps[i];
+    html += '<div class="pstep" data-step="' + s.id + '">'
+      + '<span class="icn wait">' + (i+1) + '</span>'
+      + '<span>' + (s.description || '步骤 ' + (i+1)) + '</span>'
+      + '</div>';
+  }
+  html += '<div class="pbar" style="display:none"><div class="pf" style="width:0%"></div></div>';
+  d.innerHTML = html;
+  msgs.appendChild(d); scrollBtm();
+}
+
+function addStepStatus(stepId, desc, status) {
+  var card = document.getElementById('planCard');
+  if (!card) return;
+  var el = card.querySelector('[data-step="' + stepId + '"]');
+  if (!el) return;
+  var icn = el.querySelector('.icn');
+  if (!icn) return;
+  icn.className = 'icn ' + (status === 'done' ? 'done' : status === 'running' ? 'run' : 'wait');
+  icn.textContent = status === 'done' ? 'OK' : status === 'running' ? '' : stepId;
+  // 进度条
+  var pbar = card.querySelector('.pbar');
+  if (pbar) {
+    pbar.style.display = 'block';
+    var done = card.querySelectorAll('.icn.done').length;
+    var total = card.querySelectorAll('.pstep').length;
+    var pct = Math.round((done / total) * 100);
+    pbar.querySelector('.pf').style.width = pct + '%';
+  }
+}
+
+function addDiffView(file, before, after, action) {
+  var d = document.createElement('div'); d.className = 'msg agent';
+  var linesBefore = (before || '').split('\n').length;
+  var linesAfter = (after || '').split('\n').length;
+  var added = Math.max(0, linesAfter - linesBefore);
+  var removed = Math.max(0, linesBefore - linesAfter);
+
+  var diffHtml = '';
+  if (before && after) {
+    var bLines = before.split('\n');
+    var aLines = after.split('\n');
+    var maxLen = Math.max(bLines.length, aLines.length);
+    diffHtml = '<div class="diff-view">';
+    for (var i = 0; i < maxLen; i++) {
+      var bLine = i < bLines.length ? bLines[i] : '';
+      var aLine = i < aLines.length ? aLines[i] : '';
+      if (bLine !== aLine) {
+        if (i < bLines.length) diffHtml += '<div class="diff-ln diff-rm"><span class="diff-num">' + (i+1) + '</span><span class="diff-op">-</span>' + escHtml(bLine) + '</div>';
+        if (i < aLines.length) diffHtml += '<div class="diff-ln diff-add"><span class="diff-num">' + (i+1) + '</span><span class="diff-op">+</span>' + escHtml(aLine) + '</div>';
+      } else {
+        diffHtml += '<div class="diff-ln diff-eq"><span class="diff-num">' + (i+1) + '</span><span class="diff-op"> </span>' + escHtml(bLine) + '</div>';
+      }
+    }
+    diffHtml += '</div>';
+  }
+
+  d.innerHTML = '<div class="bubble">'
+    + '<div style="color:var(--accent);font-weight:600;margin-bottom:4px;">📝 ' + escHtml(file) + '</div>'
+    + '<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">'
+    + (added > 0 ? '<span style="color:var(--green);margin-right:8px;">+' + added + ' 行</span>' : '')
+    + (removed > 0 ? '<span style="color:var(--red);">-' + removed + ' 行</span>' : '')
+    + '</div>'
+    + diffHtml
+    + '</div>';
+  msgs.appendChild(d); scrollBtm();
+}
+
+function updateProgress(current, total) {
+  var pct = Math.round((current / total) * 100);
+  setT('sProgress', pct + '%');
+  var bar = document.getElementById('progressFill');
+  if (bar) bar.style.width = pct + '%';
 }
 
 function saveLocal() {

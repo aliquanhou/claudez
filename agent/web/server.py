@@ -91,61 +91,42 @@ def _build_app(agent) -> FastAPI:
 
         return EventSourceResponse(event_generator())
 
-    # ── 发送消息（触发 Agent） ──
+    # ── 发送消息（使用 run_stream） ──
     @app.post("/api/send")
     async def api_send(body: SendBody):
         if not body.text or not body.text.strip():
             return {"status": "error", "message": "消息为空"}
 
-        # 广播用户消息
-        _broadcast("user_message", {"text": body.text})
-
-        # 在线程中运行 Agent
         def _run():
             try:
-                # 挂载 SSE 回调
-                agent.on_stream = lambda chunk: _broadcast("token", {"text": chunk})
+                for event in agent.run_stream(body.text):
+                    ev_type = event.get("type", "")
+                    ev_data = event.get("data", {})
 
-                original_on_tool_start = agent.on_tool_start
-                def _on_tool_start(name, args):
-                    _broadcast("tool_start", {"name": name, "args": args})
-                    _broadcast("status_update", _read_status(agent))
-                    if original_on_tool_start:
-                        original_on_tool_start(name, args)
-                agent.on_tool_start = _on_tool_start
-
-                original_on_tool_call = agent.on_tool_call
-                def _on_tool_call(name, args, result, duration):
-                    _broadcast("tool_result", {
-                        "name": name, "duration_ms": duration,
-                        "success": not result.startswith("["),
-                    })
-                    _broadcast("status_update", _read_status(agent))
-                    if original_on_tool_call:
-                        original_on_tool_call(name, args, result, duration)
-                agent.on_tool_call = _on_tool_call
-
-                original_on_message = agent.on_message
-                def _on_message(role, content):
-                    if role == "assistant":
-                        _broadcast("status_update", _read_status(agent))
-                    if original_on_message:
-                        original_on_message(role, content)
-                agent.on_message = _on_message
-
-                # 发送状态（运行前）
-                _broadcast("status_update", _read_status(agent))
-
-                # 执行
-                result = agent.run(body.text)
-
-                # 发送状态（运行后）
-                _broadcast("status_update", _read_status(agent))
-
-                if result.startswith("["):
-                    _broadcast("error", {"text": result})
-                else:
-                    _broadcast("done", {"text": result})
+                    if ev_type == "text":
+                        _broadcast("token", ev_data)
+                    elif ev_type == "thought":
+                        _broadcast("thought", ev_data)
+                    elif ev_type == "plan":
+                        _broadcast("plan", ev_data)
+                    elif ev_type == "step_start":
+                        _broadcast("step_start", ev_data)
+                    elif ev_type == "step_diff":
+                        _broadcast("step_diff", ev_data)
+                    elif ev_type == "step_done":
+                        _broadcast("step_done", ev_data)
+                    elif ev_type == "tool_call":
+                        _broadcast("tool_start", ev_data)
+                    elif ev_type == "tool_result":
+                        _broadcast("tool_result", ev_data)
+                    elif ev_type == "progress":
+                        _broadcast("progress", ev_data)
+                    elif ev_type == "status":
+                        _broadcast("status_update", ev_data)
+                    elif ev_type == "done":
+                        _broadcast("done", ev_data)
+                    elif ev_type == "error":
+                        _broadcast("error", ev_data)
 
             except Exception as e:
                 _broadcast("error", {"text": str(e)})

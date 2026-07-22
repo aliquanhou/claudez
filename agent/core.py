@@ -490,6 +490,205 @@ class Agent:
                   self.stats["tool_calls"], self.stats["total_tokens"])
         return final_response if final_response else "[无响应]"
 
+    # ── 流式执行（工作流事件） ──
+
+    def _push_event(self, ev_type: str, data: dict) -> None:
+        """向事件队列推送一个事件（如果队列存在）。"""
+        q = getattr(self, '_event_queue', None)
+        if q is not None:
+            try:
+                q.put_nowait({"type": ev_type, "data": data})
+            except Exception:
+                pass
+
+    def _snapshot_file(self, file_path: str) -> str:
+        """读取文件当前内容作为快照。"""
+        try:
+            import os
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    return f.read()
+        except Exception:
+            pass
+        return ""
+
+    def run_stream(self, user_message: str):
+        """流式执行 run()，通过生成器推送结构化事件。
+
+        事件类型:
+          thought       — LLM 思考过程
+          plan          — 执行计划步骤
+          step_start    — 单步开始
+          step_progress — 步骤进度
+          step_diff     — 文件 diff
+          step_done     — 单步完成
+          tool_call     — 工具调用
+          tool_result   — 工具结果
+          text          — 文本块
+          status        — 状态更新
+          progress      — 全局进度
+          done          — 完成
+          error         — 错误
+        """
+        import queue as _q
+        import threading as _t
+        import time as _time
+
+        self._event_queue = _q.Queue(maxsize=500)
+
+        # 1. 推送初始状态
+        self._push_event("status", _read_agent_status(self))
+
+        # 2. 设回调拦截
+        _orig_on_stream = self.on_stream
+        _orig_on_tool_start = self.on_tool_start
+        _orig_on_tool_call = self.on_tool_call
+        _orig_on_message = self.on_message
+
+        # 文件变更追踪
+        _changed_files: dict[str, str] = {}  # file_path → before_content
+
+        def _ev_stream(chunk: str):
+            self._push_event("text", {"text": chunk})
+            if _orig_on_stream:
+                _orig_on_stream(chunk)
+
+        def _ev_tool_start(name: str, args: dict):
+            self._push_event("tool_call", {"name": name, "args": args})
+            # 对写操作，截取文件快照
+            if name in ("write", "edit", "delete"):
+                fp = args.get("file_path", "")
+                if fp and fp not in _changed_files:
+                    _changed_files[fp] = self._snapshot_file(fp)
+            if _orig_on_tool_start:
+                _orig_on_tool_start(name, args)
+
+        def _ev_tool_call(name: str, args: dict, result: str, duration: float):
+            duration_ms = duration
+            success = not result.startswith("[")
+            self._push_event("tool_result", {
+                "name": name, "duration_ms": duration_ms, "success": success,
+            })
+            # 对写操作，推送 diff
+            if name in ("write", "edit") and success:
+                fp = args.get("file_path", "")
+                if fp in _changed_files:
+                    after = self._snapshot_file(fp)
+                    self._push_event("step_diff", {
+                        "file": fp,
+                        "before": _changed_files[fp],
+                        "after": after,
+                        "action": name,
+                    })
+                    del _changed_files[fp]
+            if _orig_on_tool_call:
+                _orig_on_tool_call(name, args, result, duration)
+
+        def _ev_message(role: str, content: str):
+            if role == "assistant":
+                self._push_event("status", _read_agent_status(self))
+            if _orig_on_message:
+                _orig_on_message(role, content)
+
+        self.on_stream = _ev_stream
+        self.on_tool_start = _ev_tool_start
+        self.on_tool_call = _ev_tool_call
+        self.on_message = _ev_message
+
+        # 3. 在线程中运行 run()
+        _result_container: list[str] = []
+        _error_container: list[Exception] = []
+
+        def _run_thread():
+            try:
+                r = self.run(user_message)
+                _result_container.append(r)
+            except Exception as e:
+                _error_container.append(e)
+
+        thread = _t.Thread(target=_run_thread, daemon=True)
+        thread.start()
+
+        # 4. 从队列读取事件并 yield
+        try:
+            # 推送思考开始
+            self._push_event("thought", {"text": "正在处理你的请求..."})
+
+            while thread.is_alive() or not self._event_queue.empty():
+                try:
+                    ev = self._event_queue.get(timeout=0.1)
+                    yield ev
+                except _q.Empty:
+                    continue
+
+            # 推送结果
+            if _error_container:
+                yield {"type": "error", "data": {"text": str(_error_container[0])}}
+            elif _result_container:
+                final = _result_container[0]
+                if final.startswith("["):
+                    yield {"type": "error", "data": {"text": final}}
+                else:
+                    yield {"type": "done", "data": {"text": final}}
+            else:
+                yield {"type": "done", "data": {"text": ""}}
+        finally:
+            # 恢复原有回调
+            self._event_queue = None
+            self.on_stream = _orig_on_stream
+            self.on_tool_start = _orig_on_tool_start
+            self.on_tool_call = _orig_on_tool_call
+            self.on_message = _orig_on_message
+
+
+def _read_agent_status(agent) -> dict:
+    """读取 Agent 当前状态（独立函数供 server.py 也使用）。"""
+    status = {
+        "phase": "", "intent": "", "goal": "",
+        "decisions": 0, "turn_count": 0,
+        "files_modified": 0, "workspace_files": 0,
+        "project_type": "", "cognition": False, "execution": False,
+        "recent_decisions": [],
+    }
+    try:
+        from agent.core import _HAS_COGNITION as hc, _HAS_EXECUTION as he
+        status["cognition"] = hc
+        status["execution"] = he
+    except Exception:
+        pass
+    try:
+        if agent.task_manager is not None:
+            t = agent.task_manager.get_current_task()
+            if t:
+                status["phase"] = t.current_phase.value
+                status["goal"] = t.user_goal[:200]
+                status["decisions"] = len(t.decisions)
+                status["turn_count"] = t.turn_count
+                status["files_modified"] = len(t.modified_files)
+                status["recent_decisions"] = [
+                    {"desc": d.description[:80], "ts": d.timestamp}
+                    for d in t.decisions[-5:]
+                ]
+    except Exception:
+        pass
+    try:
+        if agent.intent_resonator is not None:
+            iv = agent.intent_resonator.get_intent()
+            if iv:
+                status["intent"] = iv.primary_intent.value
+                status["intent_conf"] = round(iv.confidence, 2)
+    except Exception:
+        pass
+    try:
+        if agent.workspace_scanner is not None:
+            info = agent.workspace_scanner.get_info()
+            if info:
+                status["workspace_files"] = info.file_count
+                status["project_type"] = info.project_type or ""
+    except Exception:
+        pass
+    return status
+
     # ── 上下文压缩 ──
 
     def _should_compress(self, messages: list[dict]) -> bool:
