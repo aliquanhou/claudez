@@ -45,6 +45,7 @@ def _build_app(agent) -> FastAPI:
     # SSE 状态
     _sse_queues: list[q_module.Queue] = []
     _sse_lock = threading.Lock()
+    _agent_busy_lock = threading.Lock()
 
     # ── 辅助: 广播 SSE 事件 ──
     def _broadcast(event: str, data: dict):
@@ -96,6 +97,10 @@ def _build_app(agent) -> FastAPI:
     async def api_send(body: SendBody):
         if not body.text or not body.text.strip():
             return {"status": "error", "message": "消息为空"}
+
+        # 防并发锁：非阻塞获取，失败说明上一请求仍在执行
+        if not _agent_busy_lock.acquire(blocking=False):
+            return {"status": "busy", "message": "Agent 正在处理上一个请求"}
 
         def _run():
             try:
@@ -181,6 +186,8 @@ def _build_app(agent) -> FastAPI:
 
             except Exception as e:
                 _broadcast("error", {"text": str(e)})
+            finally:
+                _agent_busy_lock.release()
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
