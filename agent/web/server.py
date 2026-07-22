@@ -51,6 +51,10 @@ class WorkspaceBody(BaseModel):
     name: str = ""
 
 
+# 工作空间根目录（模块级，供 _build_app 内路由函数访问）
+_WORKSPACE_ROOT = os.path.abspath("D:/ForgeX")
+
+
 def _build_app(agent) -> FastAPI:
     app = FastAPI(title="ForgeX Cockpit", version="1.0.0")
 
@@ -296,12 +300,10 @@ def _build_app(agent) -> FastAPI:
         return {"status": "updated", "changed": changed}
 
     # ── 工作空间管理 ──
-    _workspace_root = os.path.abspath("D:/ForgeX")
-
     @app.get("/api/workspace")
     async def api_get_workspace():
         """获取当前工作空间信息。"""
-        path = _workspace_root
+        path = _WORKSPACE_ROOT
         exists = os.path.isdir(path)
         return {
             "path": path,
@@ -312,6 +314,7 @@ def _build_app(agent) -> FastAPI:
     @app.post("/api/workspace/set")
     async def api_set_workspace(body: WorkspaceBody):
         """设置工作空间路径（导入已有目录）。"""
+        global _WORKSPACE_ROOT
         if not body.path:
             return {"success": False, "error": "路径不能为空"}
         target = os.path.abspath(body.path)
@@ -320,8 +323,7 @@ def _build_app(agent) -> FastAPI:
                 os.makedirs(target, exist_ok=True)
             except Exception as e:
                 return {"success": False, "error": f"无法创建目录: {e}"}
-        global _workspace_root
-        _workspace_root = target
+        _WORKSPACE_ROOT = target
         # 通知 Agent 切换工作目录
         try:
             agent.set_workspace_root(target)
@@ -335,7 +337,8 @@ def _build_app(agent) -> FastAPI:
     @app.post("/api/workspace/create")
     async def api_create_workspace(body: WorkspaceBody):
         """在工作空间目录下创建新项目。"""
-        base = os.path.dirname(_workspace_root)
+        global _WORKSPACE_ROOT
+        base = os.path.dirname(_WORKSPACE_ROOT)
         name = (body.name or "new-project").strip()
         if not name:
             return {"success": False, "error": "名称不能为空"}
@@ -344,8 +347,7 @@ def _build_app(agent) -> FastAPI:
             os.makedirs(target, exist_ok=True)
         except Exception as e:
             return {"success": False, "error": f"创建失败: {e}"}
-        global _workspace_root
-        _workspace_root = target
+        _WORKSPACE_ROOT = target
         try:
             agent.set_workspace_root(target)
         except Exception as e:
