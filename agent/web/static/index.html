@@ -1053,7 +1053,7 @@ let fileTreeData = {};
 
 async function loadFileTree(retries) {
   if (retries === undefined) retries = 3;
-  var container = document.getElementById('projectTree');
+  var container = document.getElementById('wsTree');
   if (!container) return;
   for (var attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) container.innerHTML = '<div class="tree-item" style="color:var(--text3);font-size:11px;">重试 ' + attempt + '/' + retries + '...</div>';
@@ -1061,21 +1061,12 @@ async function loadFileTree(retries) {
       var r = await fetch('/api/files');
       var d = await r.json();
       if (d.error) throw new Error(d.error);
-      if (d.tree) fileTreeData = d.tree;
       if (d.tree && Object.keys(d.tree).length > 0) {
-        renderFileTree(d.tree, 'projectTree');
+        renderFileTree(d.tree, 'wsTree');
       } else {
         container.innerHTML = '<div class="tree-item" style="color:var(--text3);font-size:11px;">' + (d.file_count || 0) + ' 个文件</div>';
       }
-      if (d.file_count) {
-        document.getElementById('filesCount').textContent = d.file_count + ' 文件';
-      }
-      if (d.project_type) {
-        document.getElementById('projectType').textContent = d.project_type;
-        var ptr = document.getElementById('projectTypeRow');
-        if (ptr) ptr.style.display = 'block';
-      }
-      return; // 成功
+      return;
     } catch(err) {
       if (attempt < retries) {
         await new Promise(function(r) { setTimeout(r, 1000 * (attempt + 1)); });
