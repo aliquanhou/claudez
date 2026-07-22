@@ -152,8 +152,8 @@ def _build_app(agent) -> FastAPI:
                         _orig_on_tool_start(name, args)
 
                 def _on_tool_call(name, args, result, duration):
-                    T("SRV-CB", f"on_tool_call name={name} success={not result.startswith('[')}")
-                    success = not result.startswith("[")
+                    success = not (result.startswith("[错误]") or result.startswith("[超时]") or result.startswith("[权限拒绝]"))
+                    T("SRV-CB", f"on_tool_call name={name} success={success}")
                     _broadcast("tool_result", {
                         "name": name, "duration_ms": duration,
                         "success": success,
@@ -200,7 +200,7 @@ def _build_app(agent) -> FastAPI:
                 # 推送完成
                 T("SRV-RUN", f"broadcasting result prefix={result[:60]}")
                 _broadcast("status_update", _read_status(agent))
-                if result.startswith("["):
+                if result.startswith("[错误]") or result.startswith("[超时]") or result.startswith("[权限拒绝]") or result.startswith("[API"):
                     _broadcast("error", {"text": result})
                 else:
                     _broadcast("done", {"text": result})
