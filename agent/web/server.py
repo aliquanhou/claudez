@@ -39,7 +39,7 @@ class SendBody(BaseModel):
 
 
 def _build_app(agent) -> FastAPI:
-    app = FastAPI(title="ForgeX Cockpit", version="0.4.0")
+    app = FastAPI(title="ForgeX Cockpit", version="0.4.1")
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""一键启动 ForgeX Web UI。
+"""ForgeX v0.4.1 — 一键启动动态端口 Web UI。
 
 Usage:
-    python run_web.py
-    python run_web.py --port 9090
+    python run_web.py                    # 自动找可用端口 (8080→8089)
+    python run_web.py --port 9090        # 指定端口
 """
 
 import sys

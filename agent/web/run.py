@@ -1,12 +1,24 @@
-"""ForgeX Web UI — Uvicorn 启动入口。"""
+"""ForgeX Web UI — Uvicorn 启动入口（v0.4.1 动态端口）。"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import socket
 import sys
+import webbrowser
 from pathlib import Path
+
+
+def _find_available_port(start_port: int = 8080, max_attempts: int = 10) -> int:
+    """从 start_port 开始扫描可用端口。"""
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return start_port + max_attempts
 
 
 def main():
@@ -23,23 +35,32 @@ def main():
 
     agent = Agent(config)
 
-    print(f"  ForgeX v0.4.0 Web UI")
+    print(f"  ForgeX v0.4.1 Web UI")
     print(f"  Cognition: {'ON' if _HAS_COGNITION else 'OFF'}")
     print(f"  Execution: {'ON' if _HAS_EXECUTION else 'OFF'}")
     print(f"  Model: {config.get('model', 'default')}")
     print()
 
     # 创建 FastAPI 应用
-    from .server import create_app
-    app = create_app(agent)
+    from .server import _build_app
+    app = _build_app(agent)
 
-    # 启动
-    import uvicorn
+    # 动态端口
     host = "0.0.0.0"
-    port = 8080
+    port = _find_available_port()
+    url = f"http://localhost:{port}"
+
     print(f"  Listening on http://{host}:{port}")
-    print(f"  Open http://localhost:{port} in browser")
+    print(f"  Open {url} in browser")
     print()
+
+    # 自动打开浏览器
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+    import uvicorn
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
