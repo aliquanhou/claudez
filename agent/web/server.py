@@ -1,45 +1,65 @@
-"""ForgeX Web UI — FastAPI 服务器。
+"""ForgeX Web UI v2 — FastAPI 服务器 + SSE 流式。
 
 API:
-  POST /chat    → 发送消息并执行
-  GET  /status  → 当前系统状态
-  GET  /health  → 健康检查
-  GET  /        → index.html
+  GET  /              → cockpit.html (驾驶舱 UI)
+  GET  /api/stream    → SSE 事件流
+  POST /api/send      → 发送消息
+  GET  /api/status    → 当前状态快照
+  GET  /api/tools     → 已注册工具列表
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import queue as q_module
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+import uvicorn
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-
-from .models import ChatRequest, ChatResponse, StatusResponse
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 _log = logging.getLogger("forgex.web")
-
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
 
 
-def create_app(agent) -> FastAPI:
-    """创建 FastAPI 应用，挂载 agent 实例。"""
-    app = FastAPI(title="ForgeX Web UI", version="0.4.0")
+class SendBody(BaseModel):
+    text: str
 
-    # 挂载静态文件
+
+def _build_app(agent) -> FastAPI:
+    app = FastAPI(title="ForgeX Cockpit", version="0.4.0")
+
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    # 线程安全锁
-    _lock = threading.Lock()
+    # SSE 状态
+    _sse_queues: list[q_module.Queue] = []
+    _sse_lock = threading.Lock()
 
+    # ── 辅助: 广播 SSE 事件 ──
+    def _broadcast(event: str, data: dict):
+        payload = json.dumps(data, ensure_ascii=False)
+        with _sse_lock:
+            dead: list[q_module.Queue] = []
+            for q in _sse_queues:
+                try:
+                    q.put_nowait({"event": event, "data": payload})
+                except q_module.Full:
+                    dead.append(q)
+            for q in dead:
+                _sse_queues.remove(q)
+
+    # ── 页面 ──
     @app.get("/")
     async def index():
         html_path = STATIC_DIR / "index.html"
@@ -47,58 +67,143 @@ def create_app(agent) -> FastAPI:
             return FileResponse(str(html_path))
         return {"error": "index.html not found"}
 
-    @app.post("/chat", response_model=ChatResponse)
-    async def chat(req: ChatRequest):
-        """接收用户消息，调用 Agent.run()，返回结果。"""
-        if not req.message or not req.message.strip():
-            return ChatResponse(response="[错误] 消息不能为空")
+    # ── SSE 流 ──
+    @app.get("/api/stream")
+    async def sse_stream(request: Request):
+        queue: q_module.Queue = q_module.Queue(maxsize=1000)
+        with _sse_lock:
+            _sse_queues.append(queue)
 
-        with _lock:
+        async def event_generator():
             try:
-                t0 = time.time()
-                result = agent.run(req.message)
-                duration = time.time() - t0
-                _log.info("chat msg_len=%d duration=%.1fs", len(req.message), duration)
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        msg = queue.get(timeout=2)
+                        yield msg
+                    except q_module.Empty:
+                        yield {"event": "ping", "data": "{}"}
+            finally:
+                with _sse_lock:
+                    if queue in _sse_queues:
+                        _sse_queues.remove(queue)
+
+        return EventSourceResponse(event_generator())
+
+    # ── 发送消息（触发 Agent） ──
+    @app.post("/api/send")
+    async def api_send(body: SendBody):
+        if not body.text or not body.text.strip():
+            return {"status": "error", "message": "消息为空"}
+
+        # 广播用户消息
+        _broadcast("user_message", {"text": body.text})
+
+        # 在线程中运行 Agent
+        def _run():
+            try:
+                # 挂载 SSE 回调
+                agent.on_stream = lambda chunk: _broadcast("token", {"text": chunk})
+
+                original_on_tool_start = agent.on_tool_start
+                def _on_tool_start(name, args):
+                    _broadcast("tool_start", {"name": name, "args": args})
+                    _broadcast("status_update", _read_status(agent))
+                    if original_on_tool_start:
+                        original_on_tool_start(name, args)
+                agent.on_tool_start = _on_tool_start
+
+                original_on_tool_call = agent.on_tool_call
+                def _on_tool_call(name, args, result, duration):
+                    _broadcast("tool_result", {
+                        "name": name, "duration_ms": duration,
+                        "success": not result.startswith("["),
+                    })
+                    _broadcast("status_update", _read_status(agent))
+                    if original_on_tool_call:
+                        original_on_tool_call(name, args, result, duration)
+                agent.on_tool_call = _on_tool_call
+
+                original_on_message = agent.on_message
+                def _on_message(role, content):
+                    if role == "assistant":
+                        _broadcast("status_update", _read_status(agent))
+                    if original_on_message:
+                        original_on_message(role, content)
+                agent.on_message = _on_message
+
+                # 发送状态（运行前）
+                _broadcast("status_update", _read_status(agent))
+
+                # 执行
+                result = agent.run(body.text)
+
+                # 发送状态（运行后）
+                _broadcast("status_update", _read_status(agent))
+
+                if result.startswith("["):
+                    _broadcast("error", {"text": result})
+                else:
+                    _broadcast("done", {"text": result})
+
             except Exception as e:
-                _log.error("chat error: %s", e)
-                return ChatResponse(response=f"[错误] {e}")
+                _broadcast("error", {"text": str(e)})
 
-        # 提取状态
-        phase, intent, decisions, turn_count = _read_state(agent)
-        return ChatResponse(
-            response=result,
-            phase=phase,
-            intent=intent,
-            decisions=decisions,
-            turn_count=turn_count,
-        )
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
 
-    @app.get("/status", response_model=StatusResponse)
-    async def status():
-        """返回当前系统状态。"""
-        return _build_status(agent)
+        return {"status": "ok"}
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok", "timestamp": time.time()}
+    # ── 状态快照 ──
+    @app.get("/api/status")
+    async def api_status():
+        return _read_status(agent)
+
+    # ── 工具列表 ──
+    @app.get("/api/tools")
+    async def api_tools():
+        try:
+            from agent.tools import get_all_tools
+            tools = get_all_tools()
+            return {"tools": [{"name": t.get("function", {}).get("name", "?"),
+                               "description": (t.get("function", {}).get("description", "") or "")[:80]}
+                              for t in tools]}
+        except Exception as e:
+            return {"tools": [], "error": str(e)}
 
     return app
 
 
-def _read_state(agent) -> tuple[str, str, int, int]:
-    """从 agent 中读取关键状态。"""
-    phase = ""
-    intent = ""
-    decisions = 0
-    turn_count = 0
+def _read_status(agent) -> dict:
+    """读取 Agent 当前状态。"""
+    status = {
+        "phase": "", "intent": "", "goal": "",
+        "decisions": 0, "turn_count": 0,
+        "files_modified": 0, "workspace_files": 0,
+        "project_type": "", "cognition": False, "execution": False,
+        "recent_decisions": [],
+    }
+    try:
+        from agent.core import _HAS_COGNITION as hc, _HAS_EXECUTION as he
+        status["cognition"] = hc
+        status["execution"] = he
+    except Exception:
+        pass
 
     try:
         if agent.task_manager is not None:
-            task = agent.task_manager.get_current_task()
-            if task:
-                phase = task.current_phase.value
-                decisions = len(task.decisions)
-                turn_count = task.turn_count
+            t = agent.task_manager.get_current_task()
+            if t:
+                status["phase"] = t.current_phase.value
+                status["goal"] = t.user_goal[:200]
+                status["decisions"] = len(t.decisions)
+                status["turn_count"] = t.turn_count
+                status["files_modified"] = len(t.modified_files)
+                status["recent_decisions"] = [
+                    {"desc": d.description[:80], "ts": d.timestamp}
+                    for d in t.decisions[-5:]
+                ]
     except Exception:
         pass
 
@@ -106,40 +211,8 @@ def _read_state(agent) -> tuple[str, str, int, int]:
         if agent.intent_resonator is not None:
             iv = agent.intent_resonator.get_intent()
             if iv:
-                intent = f"{iv.primary_intent.value} ({iv.confidence:.0%})"
-    except Exception:
-        pass
-
-    return phase, intent, decisions, turn_count
-
-
-def _build_status(agent) -> StatusResponse:
-    """构建完整状态响应。"""
-    status = StatusResponse()
-
-    try:
-        from agent.core import _HAS_COGNITION as hc, _HAS_EXECUTION as he
-        status.cognition = hc
-        status.execution = he
-    except Exception:
-        pass
-
-    phase, intent, decisions, turn_count = _read_state(agent)
-    status.phase = phase
-    status.intent = intent
-    status.decisions_count = decisions
-    status.turn_count = turn_count
-
-    try:
-        if agent.task_manager is not None:
-            task = agent.task_manager.get_current_task()
-            if task:
-                status.goal = task.user_goal[:200]
-                status.modified_files = task.modified_files[-10:]
-                status.decisions = [
-                    {"description": d.description[:100], "rationale": (d.rationale or "")[:100]}
-                    for d in task.decisions[-5:]
-                ]
+                status["intent"] = iv.primary_intent.value
+                status["intent_conf"] = round(iv.confidence, 2)
     except Exception:
         pass
 
@@ -147,8 +220,8 @@ def _build_status(agent) -> StatusResponse:
         if agent.workspace_scanner is not None:
             info = agent.workspace_scanner.get_info()
             if info:
-                status.workspace_files = info.file_count
-                status.project_type = info.project_type or ""
+                status["workspace_files"] = info.file_count
+                status["project_type"] = info.project_type or ""
     except Exception:
         pass
 

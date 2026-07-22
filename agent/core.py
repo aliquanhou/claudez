@@ -260,29 +260,46 @@ class Agent:
             if t:
                 t.turn_count += 1
 
-        # Cognition: 根据意图自动推进阶段
-        if self.task_manager is not None and self.intent_resonator is not None:
-            intent = self.intent_resonator.get_intent()
-            if intent and self._cog_task_id:
-                phase_map = {
-                    "implementing": "executing",
-                    "debugging": "analysis",
-                    "refactoring": "planning",
-                    "exploring": "analysis",
-                    "reviewing": "verifying",
-                }
-                target = phase_map.get(intent.primary_intent.value)
+        # Cognition: 根据用户消息内容 + 意图推进阶段
+        if self.task_manager is not None and self._cog_task_id:
+            t = self.task_manager.get_current_task()
+            if t and t.current_phase.value == "intent_clarify":
+                # 1. 尝试用 IntentResonator
+                target = None
+                if self.intent_resonator is not None:
+                    intent = self.intent_resonator.get_intent()
+                    if intent:
+                        phase_map = {
+                            "implementing": "executing",
+                            "debugging": "analysis",
+                            "refactoring": "planning",
+                            "exploring": "analysis",
+                            "reviewing": "verifying",
+                        }
+                        target = phase_map.get(intent.primary_intent.value)
+                # 2. 如果 IntentResonator 无数据，根据消息内容推断
+                if target is None:
+                    eng_keywords = ["创建", "修改", "重构", "修复", "实现", "编写", "删除",
+                                    "调试", "测试", "部署", "分析", "优化", "迁移", "配置",
+                                    "create", "write", "edit", "modify", "refactor", "fix",
+                                    "implement", "delete", "debug", "test", "deploy",
+                                    "analyze", "optimize", "migrate", "add", "change"]
+                    msg_lower = user_message.lower()
+                    has_eng = any(kw in msg_lower for kw in eng_keywords)
+                    if has_eng:
+                        target = "executing"
+                    else:
+                        target = "analysis"
                 if target:
-                    t = self.task_manager.get_current_task()
-                    if t and t.current_phase.value == "intent_clarify":
-                        from .cognition import TaskPhase
-                        try:
-                            new_phase = TaskPhase(target)
-                            self.task_manager.transition_phase(self._cog_task_id, new_phase)
-                            _log.info("cognition auto_transition %s -> %s (intent=%s)",
-                                      t.current_phase.value, target, intent.primary_intent.value)
-                        except Exception:
-                            pass
+                    from .cognition import TaskPhase
+                    try:
+                        new_phase = TaskPhase(target)
+                        self.task_manager.transition_phase(self._cog_task_id, new_phase)
+                        _log.info("cognition auto_transition %s -> %s (msg_based=%s)",
+                                  t.current_phase.value, target,
+                                  self.intent_resonator is None or self.intent_resonator.get_intent() is None)
+                    except Exception:
+                        pass
         self._start_time = time.time()
         self.stats["start_time"] = self._start_time
 
