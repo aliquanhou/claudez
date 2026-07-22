@@ -1,5 +1,22 @@
 # Changelog
 
+## [forgex-v0.4.0-alpha] - 2026-07-22
+
+### Added
+- **执行层第一批**：PlanExecutor + ToolOrchestrator
+  - `plan_executor`：将 PlanVerifier 输出的方案拆解为原子执行步骤
+    - 1:N 映射（一个 PlanStep → 多个 ExecutionStep）
+    - 文件冲突检测（同文件修改自动串行化）
+  - `tool_orchestrator`：执行步骤编排
+    - 并行执行无依赖步骤（ThreadPoolExecutor）
+    - 复用已有 `execute_tool()` 函数
+    - 超时控制（30s）+ 自动重试（1次）
+    - 依赖跳过（前一步失败，子步跳过）
+
+### Tested
+- 8/8 验收场景全部通过
+- 端到端流水线验证通过
+
 ## [forgex-v0.3.4] - 2026-07-22
 
 ### Added
