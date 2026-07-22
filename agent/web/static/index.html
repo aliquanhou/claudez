@@ -202,6 +202,28 @@ body {
   font-size: 10px; color: var(--text3); margin-left: 4px;
 }
 
+/* ── 工作空间 ── */
+.ws-btn {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text2); cursor: pointer; font-size: 11px;
+  padding: 1px 6px; border-radius: 3px; line-height: 1.4;
+  transition: all 0.15s;
+}
+.ws-btn:hover { background: var(--surface3); color: var(--text); border-color: var(--border2); }
+.ws-path {
+  font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
+  color: var(--accent); padding: 3px 8px; margin-bottom: 4px;
+  background: rgba(0,212,255,0.04); border-radius: 4px;
+  border: 1px solid rgba(0,212,255,0.1); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ws-tree {
+  max-height: 160px; overflow-y: auto; font-size: 12px;
+  padding: 2px 4px; border-radius: 4px;
+}
+.ws-tree .tree-item { padding: 1px 4px; }
+.ws-tree::-webkit-scrollbar { width: 3px; }
+
 /* ── 工具组标题（可折叠） ── */
 .group-header {
   display: flex; align-items: center; gap: 6px; padding: 4px 6px;
@@ -426,13 +448,16 @@ body {
 
 <!-- ═══ 左侧 ═══ -->
 <div class="left-panel">
-  <div class="sec">
-    <div class="sec-title">📁 项目&ensp;<span style="font-weight:400;font-size:9px;color:var(--text3);" id="filesCount">扫描中</span></div>
-    <div id="projectTree">
-      <div class="tree-item" style="color:var(--text3);font-size:11px;">扫描中...</div>
+  <!-- 📂 工作空间 -->
+  <div class="sec" style="padding:0 0 6px 0;">
+    <div style="display:flex;align-items:center;gap:4px;padding:0 6px 4px;">
+      <span style="font-size:10px;font-weight:600;color:var(--text3);letter-spacing:0.5px;flex:1;">📂 工作空间</span>
+      <button class="ws-btn" onclick="importWorkspace()" title="导入已有目录">📂</button>
+      <button class="ws-btn" onclick="createWorkspace()" title="新建项目">➕</button>
     </div>
-    <div style="margin-top:4px;padding:0 6px;font-size:10px;color:var(--text3);display:none;" id="projectTypeRow">
-      类型: <span id="projectType">—</span>
+    <div class="ws-path" id="wsPath">D:/ForgeX/</div>
+    <div class="ws-tree" id="wsTree">
+      <div style="font-size:11px;color:var(--text3);padding:2px 6px;">扫描中...</div>
     </div>
   </div>
   <!-- 📦 内置工具 — 默认展开 -->
@@ -1214,11 +1239,75 @@ async function applyLLMConfig() {
 // ── 静态数据轮询 (并行加载，出错不影响其他) ──
 async function pollStatic() {
   await Promise.all([
+    loadWorkspace(),
     loadFileTree(3),
     loadLLMConfig(),
     loadToolList(3),
     loadHostTools(),
   ]);
+}
+
+// ── 工作空间管理 ──
+
+async function loadWorkspace() {
+  try {
+    var r = await fetch('/api/workspace');
+    var d = await r.json();
+    var pathEl = document.getElementById('wsPath');
+    if (pathEl) pathEl.textContent = d.path;
+    // 如果有 file_count 信息
+  } catch(_) {}
+}
+
+function importWorkspace() {
+  var path = prompt('输入已有目录的完整路径：\n(例如 D:/my-project)', '');
+  if (!path || !path.trim()) return;
+  path = path.trim().replace(/\\/g, '/');
+  setWorkspace(path);
+}
+
+function createWorkspace() {
+  var name = prompt('输入新项目名称：', 'my-project');
+  if (!name || !name.trim()) return;
+  name = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  fetch('/api/workspace/create', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name}),
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      log('i', '工作空间已创建: ' + d.path);
+      refreshWorkspace(d.path);
+    } else {
+      log('e', '创建失败: ' + (d.error || ''));
+    }
+  }).catch(function(e) {
+    log('e', '创建请求失败: ' + e);
+  });
+}
+
+function setWorkspace(path) {
+  fetch('/api/workspace/set', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: path}),
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      log('i', '工作空间已切换: ' + d.path);
+      refreshWorkspace(d.path);
+    } else {
+      log('e', '切换失败: ' + (d.error || ''));
+    }
+  }).catch(function(e) {
+    log('e', '切换请求失败: ' + e);
+  });
+}
+
+function refreshWorkspace(path) {
+  var pathEl = document.getElementById('wsPath');
+  if (pathEl) pathEl.textContent = path;
+  // 重刷文件树
+  loadFileTree(3);
 }
 
 // ── 工具组展开/折叠 ──

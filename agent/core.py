@@ -896,6 +896,27 @@ class Agent:
     def set_project_info(self, info: dict):
         self._project_info = info
 
+    def set_workspace_root(self, root_path: str):
+        """切换工作空间根目录（v1.0.0）。
+
+        Agent 的所有文件操作将基于这个新路径。
+        WorkspaceScanner 重新扫描新路径。
+        """
+        import os
+        root_path = os.path.abspath(root_path)
+        if not os.path.isdir(root_path):
+            os.makedirs(root_path, exist_ok=True)
+        # 重新初始化 WorkspaceScanner
+        try:
+            from .cognition import WorkspaceScanner
+            self.workspace_scanner = WorkspaceScanner(root_path)
+            # 触发扫描
+            info = self.workspace_scanner.get_info()
+            _log.info("workspace_root changed to %s (%d files)",
+                      root_path, info.file_count)
+        except Exception as e:
+            _log.warning("workspace_root change failed: %s", e)
+
     def store_memory(self, content: str, mem_type: str = "conversation"):
         if self.semantic_memory:
             self.semantic_memory.store(content, {"type": mem_type, "source": "agent"})

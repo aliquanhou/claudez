@@ -46,8 +46,13 @@ class LLMConfigBody(BaseModel):
     provider: str | None = None
 
 
+class WorkspaceBody(BaseModel):
+    path: str = ""
+    name: str = ""
+
+
 def _build_app(agent) -> FastAPI:
-    app = FastAPI(title="ForgeX Cockpit", version="0.4.1")
+    app = FastAPI(title="ForgeX Cockpit", version="1.0.0")
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -290,6 +295,65 @@ def _build_app(agent) -> FastAPI:
         _log.info("config_updated: %s", ", ".join(changed))
         return {"status": "updated", "changed": changed}
 
+    # ── 工作空间管理 ──
+    _workspace_root = os.path.abspath("D:/ForgeX")
+
+    @app.get("/api/workspace")
+    async def api_get_workspace():
+        """获取当前工作空间信息。"""
+        path = _workspace_root
+        exists = os.path.isdir(path)
+        return {
+            "path": path,
+            "exists": exists,
+            "file_count": len(os.listdir(path)) if exists else 0,
+        }
+
+    @app.post("/api/workspace/set")
+    async def api_set_workspace(body: WorkspaceBody):
+        """设置工作空间路径（导入已有目录）。"""
+        if not body.path:
+            return {"success": False, "error": "路径不能为空"}
+        target = os.path.abspath(body.path)
+        if not os.path.isdir(target):
+            try:
+                os.makedirs(target, exist_ok=True)
+            except Exception as e:
+                return {"success": False, "error": f"无法创建目录: {e}"}
+        global _workspace_root
+        _workspace_root = target
+        # 通知 Agent 切换工作目录
+        try:
+            agent.set_workspace_root(target)
+        except Exception as e:
+            _log.warning("agent.set_workspace_root failed: %s", e)
+        # 广播状态更新
+        _broadcast("status_update", _read_status(agent))
+        T("WORKSPACE", f"set to {target}")
+        return {"success": True, "path": target}
+
+    @app.post("/api/workspace/create")
+    async def api_create_workspace(body: WorkspaceBody):
+        """在工作空间目录下创建新项目。"""
+        base = os.path.dirname(_workspace_root)
+        name = (body.name or "new-project").strip()
+        if not name:
+            return {"success": False, "error": "名称不能为空"}
+        target = os.path.join(base, name)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except Exception as e:
+            return {"success": False, "error": f"创建失败: {e}"}
+        global _workspace_root
+        _workspace_root = target
+        try:
+            agent.set_workspace_root(target)
+        except Exception as e:
+            _log.warning("agent.set_workspace_root failed: %s", e)
+        _broadcast("status_update", _read_status(agent))
+        T("WORKSPACE", f"created {target}")
+        return {"success": True, "path": target}
+
     # ── 停止执行 ──
     @app.post("/api/stop")
     async def api_stop():
@@ -364,6 +428,7 @@ def _read_status(agent) -> dict:
             if info:
                 status["workspace_files"] = info.file_count
                 status["project_type"] = info.project_type or ""
+                status["workspace_root"] = str(info.root_path)
     except Exception:
         pass
 
