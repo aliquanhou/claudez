@@ -1,6 +1,6 @@
 # Changelog
 
-## [forgex-v0.4.0-alpha] - 2026-07-22
+## [forgex-v0.4.0] - 2026-07-22
 
 ### Added
 - **执行层第一批**：PlanExecutor + ToolOrchestrator
