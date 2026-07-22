@@ -453,10 +453,12 @@ body {
 // ── 状态 ──
 let curText = '';
 let streaming = false;
+let isSending = false;
 let msgId = 0;
 let totalTokens = 0;
 let startTime = 0;
 let curPlanSteps = [];
+let streamingTimer = null;  // safety timeout
 
 // ── DOM ──
 const msgs = document.getElementById('msgs');
@@ -505,7 +507,7 @@ function connectSSE() {
     const d = JSON.parse(e.data); appendToken(d.text);
   });
   evtSrc.addEventListener('user_message', e => {
-    const d = JSON.parse(e.data); addMsg('user', d.text);
+    // 前端已在 send() 中乐观添加，此处忽略避免重复
   });
   evtSrc.addEventListener('tool_start', e => {
     const d = JSON.parse(e.data); addToolBadge(d.name, 'run');
@@ -518,13 +520,15 @@ function connectSSE() {
     log(d.success ? 'i' : 'w', (d.success ? '✓' : '✗') + ' ' + d.name + ' (' + d.duration_ms.toFixed(0) + 'ms)');
   });
   evtSrc.addEventListener('status_update', e => { updateDash(JSON.parse(e.data)); });
-  evtSrc.addEventListener('done', e => {
+  evtSrc.addEventListener('done', function(e) {
+    if (streamingTimer) clearTimeout(streamingTimer);
     const d = JSON.parse(e.data); finishMsg(d.text);
     statusDot.className = 'dot'; streaming = false; isSending = false;
     sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
     inputHint.textContent = '就绪'; inp.focus();
   });
-  evtSrc.addEventListener('error', e => {
+  evtSrc.addEventListener('error', function(e) {
+    if (streamingTimer) clearTimeout(streamingTimer);
     const d = JSON.parse(e.data); finishMsg('[错误] ' + d.text);
     statusDot.className = 'dot'; streaming = false; isSending = false;
     sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
@@ -538,7 +542,6 @@ function connectSSE() {
 }
 
 // ── 发送 ──
-let isSending = false;
 function send() {
   const text = inp.value.trim();
   if (!text || streaming || isSending) return;
@@ -550,8 +553,19 @@ function send() {
   curText = ''; curPlanSteps = [];
   inputHint.textContent = '执行中...';
   addMsg('user', text);
+  // Safety timeout: auto-unlock after 120s if SSE never completes
+  if (streamingTimer) clearTimeout(streamingTimer);
+  streamingTimer = setTimeout(function() {
+    if (streaming) {
+      streaming = false; isSending = false;
+      sendBtn.disabled = false; stopBtn.disabled = true; inp.disabled = false;
+      statusDot.className = 'dot';
+      inputHint.textContent = '超时';
+      finishMsg('[超时] 服务器未响应');
+    }
+  }, 120000);
   fetch('/api/send', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text}) })
-  .catch(() => { finishMsg('[网络错误] 无法连接到服务器'); streaming=false; isSending=false; sendBtn.disabled=false; stopBtn.disabled=true; inp.disabled=false; });
+  .catch(function() { finishMsg('[网络错误] 无法连接到服务器'); streaming=false; isSending=false; sendBtn.disabled=false; stopBtn.disabled=true; inp.disabled=false; });
 }
 
 function stopStream() {
