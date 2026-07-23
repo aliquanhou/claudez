@@ -28,6 +28,92 @@ from .plan_executor import ExecutionStep
 _log = logging.getLogger("claudez.execution")
 
 
+# ── v2.0: 文件/资源读写锁 ──
+
+class ResourceLockManager:
+    """基于文件路径的读写锁管理器。
+
+    设计：
+      - 不同路径完全独立（无锁竞争）
+      - 同一路径：多个读共享，写独占（阻塞所有读和写）
+      - 自动释放：使用 with 语句
+    """
+
+    def __init__(self):
+        self._locks: dict[str, "_RWLock"] = {}
+        self._lock = threading.Lock()
+
+    def _get_lock(self, path: str) -> "_RWLock":
+        with self._lock:
+            if path not in self._locks:
+                self._locks[path] = _RWLock()
+            return self._locks[path]
+
+    def acquire_read(self, path: str) -> "_LockContext":
+        """获取读锁。同一路径允许多个并发读。"""
+        lock = self._get_lock(path)
+        return _LockContext(lock, "read")
+
+    def acquire_write(self, path: str) -> "_LockContext":
+        """获取写锁。独占，阻塞所有其他读/写。"""
+        lock = self._get_lock(path)
+        return _LockContext(lock, "write")
+
+
+class _RWLock:
+    """轻量级读写锁实现。
+
+    允许多个并发 reader 或单个 writer。
+    优先权：writer 等待时，新 reader 排队（防 writer 饿死）。
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writer_active = False
+        self._waiting_writers = 0
+
+    def acquire_read(self):
+        with self._cond:
+            while self._writer_active or self._waiting_writers > 0:
+                self._cond.wait()
+            self._readers += 1
+
+    def acquire_write(self):
+        with self._cond:
+            self._waiting_writers += 1
+            while self._readers > 0 or self._writer_active:
+                self._cond.wait()
+            self._waiting_writers -= 1
+            self._writer_active = True
+
+    def release(self):
+        with self._cond:
+            if self._writer_active:
+                self._writer_active = False
+            elif self._readers > 0:
+                self._readers -= 1
+            self._cond.notify_all()
+
+
+class _LockContext:
+    """with 语句上下文管理器，自动释放锁。"""
+
+    def __init__(self, rw_lock: _RWLock, mode: str):
+        self._lock = rw_lock
+        self._mode = mode
+
+    def __enter__(self):
+        if self._mode == "read":
+            self._lock.acquire_read()
+        else:
+            self._lock.acquire_write()
+        return self
+
+    def __exit__(self, *args):
+        self._lock.release()
+
+
 @dataclass
 class StepResult:
     """单步执行结果。"""
@@ -70,6 +156,35 @@ class ToolOrchestrator:
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_workers = max_workers
+        self._resource_locks = ResourceLockManager()
+
+    def execute_tool_calls(
+        self, tool_calls: list[dict],
+    ) -> list[StepResult]:
+        """直接从 LLM 返回的 tool_calls 执行（v2.0 快速路径）。
+
+        将 LLM 的 tool_calls 转为 ExecutionStep 后编排执行。
+        可并行的只读工具会同时运行，写工具串行。
+        """
+        from .plan_executor import PlanExecutor
+        steps = PlanExecutor.from_llm_tool_calls(tool_calls)
+
+        # 分离可并行和必须串行的步骤
+        parallel_steps = [s for s in steps if s.metadata.get("is_concurrency_safe")]
+        serial_steps = [s for s in steps if s not in parallel_steps]
+
+        results: list[StepResult] = []
+
+        # 并行执行只读工具
+        if parallel_steps:
+            results.extend(self._execute_batch(parallel_steps))
+
+        # 串行执行写工具
+        for step in serial_steps:
+            r = self._execute_single(step)
+            results.append(r)
+
+        return results
 
     def execute(self, steps: list[ExecutionStep]) -> list[StepResult]:
         """执行步骤列表。
@@ -154,75 +269,82 @@ class ToolOrchestrator:
         return results
 
     def _execute_single(self, step: ExecutionStep) -> StepResult:
-        """执行单个步骤，带超时和重试。"""
+        """执行单个步骤，带超时、重试和资源读写锁。"""
         tool_name = self._ACTION_TO_TOOL.get(step.action, "bash")
         args = self._build_args(step)
 
         last_error = ""
         attempts = 0
 
-        while attempts <= step.max_retries:
-            attempts += 1
-            t0 = time.time()
+        # v2.0: 根据动作类型获取资源锁
+        lock_ctx = None
+        need_lock = step.action in ("read", "write", "edit", "delete", "verify")
+        target_path = step.target if need_lock else None
+        if need_lock and target_path and not target_path.startswith("http"):
+            is_read = step.action in ("read", "verify")
+            lock_ctx = (
+                self._resource_locks.acquire_read(target_path) if is_read
+                else self._resource_locks.acquire_write(target_path)
+            )
 
-            try:
-                # 带超时执行
-                if self.timeout > 0:
-                    result = self._run_with_timeout(tool_name, args, step)
-                else:
-                    result = execute_tool(tool_name, args)
+        if lock_ctx:
+            lock_ctx.__enter__()
+        try:
+            while attempts <= step.max_retries:
+                attempts += 1
+                t0 = time.time()
+                try:
+                    if self.timeout > 0:
+                        result = self._run_with_timeout(tool_name, args, step)
+                    else:
+                        result = execute_tool(tool_name, args)
 
-                duration = (time.time() - t0) * 1000
+                    duration = (time.time() - t0) * 1000
+                    is_error = (
+                        result.startswith("[错误]")
+                        or result.startswith("[超时]")
+                        or result.startswith("[权限拒绝]")
+                    )
+                    if is_error and attempts <= step.max_retries:
+                        last_error = result
+                        continue
 
-                # 检查结果是否指示错误
-                is_error = (
-                    result.startswith("[错误]")
-                    or result.startswith("[超时]")
-                    or result.startswith("[权限拒绝]")
-                )
+                    status = "error" if is_error else "success"
+                    return StepResult(
+                        step_id=step.id, action=step.action,
+                        target=step.target, status=status,
+                        output=result[:500],
+                        duration_ms=duration, attempts=attempts,
+                        error=result if is_error else "",
+                    )
 
-                if is_error and attempts <= step.max_retries:
-                    last_error = result
-                    _log.warning("step_retry action=%s target=%s attempt=%d/%d",
-                                  step.action, step.target, attempts, step.max_retries + 1)
-                    continue
+                except TimeoutError:
+                    duration = (time.time() - t0) * 1000
+                    last_error = "timeout"
+                    if attempts <= step.max_retries:
+                        continue
+                    return StepResult(
+                        step_id=step.id, action=step.action,
+                        target=step.target, status="timeout",
+                        output="", duration_ms=duration, attempts=attempts,
+                        error=f"timeout after {self.timeout}s",
+                    )
 
-                status = "error" if is_error else "success"
-                return StepResult(
-                    step_id=step.id, action=step.action,
-                    target=step.target, status=status,
-                    output=result[:500],
-                    duration_ms=duration, attempts=attempts,
-                    error=result if is_error else "",
-                )
+                except Exception as e:
+                    duration = (time.time() - t0) * 1000
+                    last_error = str(e)
+                    if attempts <= step.max_retries:
+                        continue
+                    return StepResult(
+                        step_id=step.id, action=step.action,
+                        target=step.target, status="error",
+                        output="", duration_ms=duration, attempts=attempts,
+                        error=str(e),
+                    )
+        finally:
+            if lock_ctx:
+                lock_ctx.__exit__(None, None, None)
 
-            except TimeoutError:
-                duration = (time.time() - t0) * 1000
-                last_error = "timeout"
-                if attempts <= step.max_retries:
-                    _log.warning("step_timeout action=%s target=%s attempt=%d",
-                                  step.action, step.target, attempts)
-                    continue
-                return StepResult(
-                    step_id=step.id, action=step.action,
-                    target=step.target, status="timeout",
-                    output="", duration_ms=duration, attempts=attempts,
-                    error=f"timeout after {self.timeout}s",
-                )
-
-            except Exception as e:
-                duration = (time.time() - t0) * 1000
-                last_error = str(e)
-                if attempts <= step.max_retries:
-                    continue
-                return StepResult(
-                    step_id=step.id, action=step.action,
-                    target=step.target, status="error",
-                    output="", duration_ms=duration, attempts=attempts,
-                    error=str(e),
-                )
-
-        # 所有重试用尽
         return StepResult(
             step_id=step.id, action=step.action,
             target=step.target, status="error",

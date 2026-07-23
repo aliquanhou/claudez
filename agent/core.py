@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,15 @@ from .tools.schema import ToolContext
 from .memory import ShortTermMemory, SemanticMemory, get_semantic_memory
 from .permissions import get_permission_manager, check_permission
 from .debug_stream import DebugCollector
+
+# v2.0 Phase 2: Agent 角色系统
+from .roles import AgentRole, get_role, get_role_definition, filter_tools_by_role, get_role_system_prompt_suffix
+
+# v2.0 Phase 3: 自进化系统
+from .self_evol.nudge import NudgeEngine
+from .self_evol.skills import SkillManager, SkillStep
+from .self_evol.review import BackgroundReviewer, ReviewNote
+from .self_evol.compressor import FourStageCompressor
 
 # ── 日志辅助（替代 structlog，零依赖） ──
 import logging
@@ -73,7 +83,9 @@ DEFAULT_CONFIG = {
     "temperature": 0.0,
     "timeout": 3600,
     "tool_timeout": 60.0,
-    "max_context_messages": 50,
+    "max_context_messages": 50,     # 按消息数截断（降级/向后兼容）
+    "max_context_tokens": 0,        # v2.0: 按 token 截断（0=使用消息数模式）
+    "parallel_tools": True,         # v2.0: ToolOrchestrator 并行执行
     "workflow_mode": "agent",
     "enable_memory": True,
     "memory_search_top_k": 5,
@@ -210,6 +222,23 @@ class Agent:
         self._call_history: list[tuple[str, str]] = []
         self._start_time = 0.0
 
+        # IntentResonator 追踪状态
+        self._last_feed_time = time.time()
+        self._last_user_msg_len = 0
+        self._round_file_switches = 0
+
+        # v2.0 Phase 2: Agent 角色（默认通用）
+        self.role = AgentRole.AGENT
+
+        # v2.0 Phase 3: 自进化系统
+        self.nudge_engine = NudgeEngine()
+        self.skill_manager = SkillManager()
+        self.background_reviewer = BackgroundReviewer(review_interval=10)
+        self._last_review_round = 0
+        self._top_nudges: list = []
+        self._current_review_note: ReviewNote | None = None
+        self._compressor_v4 = FourStageCompressor(llm_summarize_fn=None)  # no auto LLM summary
+
         # 初始化权限管理器
         pm = get_permission_manager()
         pm.set_mode(self.config.get("permission_mode", "auto"))
@@ -225,6 +254,10 @@ class Agent:
         if _HAS_COGNITION:
             self.task_manager = TaskManager()
             self.intent_resonator = IntentResonator(window_size=20)
+            # v2.0: 加载持久化意图快照
+            self._intent_store_path = self._get_intent_store_path()
+            if self.intent_resonator is not None and self._intent_store_path:
+                self.intent_resonator.load(self._intent_store_path)
             try:
                 self.workspace_scanner = WorkspaceScanner(".")
                 _log.info("cognition_init workspace=%s files=%d",
@@ -286,6 +319,151 @@ class Agent:
         if mode in ("chat", "research", "coding", "debug", "agent"):
             self.config["workflow_mode"] = mode
             _log.info("mode_switch mode=%s", mode)
+
+    # ── v2.0 Phase 2: 角色切换 ──
+
+    def set_role(self, role: AgentRole | str) -> None:
+        """设置 Agent 角色（影响工具列表和系统提示词）。"""
+        self.role = get_role(role)
+        if self.role != AgentRole.AGENT:
+            self.config["workflow_mode"] = get_role_definition(self.role).workflow_mode
+        _log.info("role_switch role=%s mode=%s", self.role.value, self.config["workflow_mode"])
+
+    # ── v2.0: IntentResonator 持久化 ──
+
+    @staticmethod
+    def _get_intent_store_path() -> str | None:
+        """获取意图持久化存储路径。"""
+        try:
+            base = os.environ.get("CLAUDEZ_SESSIONS_DIR", "")
+            if not base:
+                home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or "."
+                base = os.path.join(home, ".claudez", "memory", "intents")
+            else:
+                base = os.path.join(base, "..", "memory", "intents")
+            return os.path.normpath(os.path.join(base, "intent_history.json"))
+        except Exception:
+            return None
+
+    # ── v2.0: 并行工具执行 ──
+
+    def _execute_tool_tasks(
+        self, tool_tasks: list[tuple[str, dict, str, str | None]],
+        sequential_exec,
+    ) -> list[tuple[str, dict, str, str, float]]:
+        """执行工具任务，支持 ToolOrchestrator 并行路径。
+
+        Args:
+            tool_tasks: [(name, args, cid, pre_error_or_None), ...]
+            sequential_exec: 回退用的串行执行函数 (name, args, cid) → str
+
+        Returns:
+            [(name, args, cid, result_str, duration_ms), ...]
+        """
+        # 分离预拒绝和待执行的调用
+        rejected = [(n, a, c, r, 0.0) for n, a, c, r in tool_tasks if r is not None]
+        accepted = [(n, a, c) for n, a, c, r in tool_tasks if r is None]
+
+        if not accepted:
+            return rejected
+
+        # 尝试使用 ToolOrchestrator 并行执行
+        use_orch = (
+            self.config.get("parallel_tools", False)
+            and _HAS_EXECUTION
+            and self.tool_orchestrator is not None
+        )
+
+        if use_orch:
+            try:
+                # 将 accepted 转为 tool_calls 格式
+                tool_calls = [
+                    {"name": n, "args": a, "id": c} for n, a, c in accepted
+                ]
+                step_results = self.tool_orchestrator.execute_tool_calls(tool_calls)
+
+                # 用 step_id(cid) 映射回 (name, args)
+                cid_map = {c: (n, a) for n, a, c in accepted}
+                done = []
+                for sr in step_results:
+                    n, a = cid_map.get(sr.step_id, ("unknown", {}))
+                    done.append((
+                        n, a, sr.step_id,
+                        sr.output if sr.status == "success" else f"[{sr.status.upper()}] {sr.error}",
+                        sr.duration_ms,
+                    ))
+                    cid_map.pop(sr.step_id, None)
+                # 补上 orchestrator 没返回的
+                for cid, (n, a) in cid_map.items():
+                    done.append((n, a, cid, "[错误] orchestrator 未返回此调用", 0.0))
+
+                return rejected + done
+            except Exception as ex:
+                _log.warning("orchestrator_exec fallback to sequential: %s", ex)
+                # 降级到串行路径
+
+        # 串行执行（默认路径/降级）
+        results: list[tuple[str, dict, str, str, float]] = list(rejected)
+        for n, a, cid in accepted:
+            _t0 = time.time()
+            r = sequential_exec(n, a, cid)
+            dur = (time.time() - _t0) * 1000
+            self.debug.log_tool_call(n, a, r, dur, not r.startswith("[错误]"))
+            results.append((n, a, cid, r, dur))
+        return results
+
+    # ── IntentResonator 接口（v2.0） ──
+
+    def _capture_behavioral_snapshot(self, user_message: str) -> BehavioralSnapshot | None:
+        """从会话状态合成 BehavioralSnapshot，替代 IDE 插件信号。
+
+        将 Agent 运行时统计映射为行为特征：
+          - chars_typed      ← 用户消息字符数
+          - deletions        ← tool_errors 计数
+          - undo_count       ← context_compressions 计数
+          - file_switches    ← 本轮 read/write/edit 计数
+          - idle_seconds     ← 距上次 feed 的时间
+          - cursor_speed     ← 字符数 / 时间间隔（模拟）
+          - selection_length ← 用户消息长度（模拟）
+          - scroll_speed     ← 响应内容长度（模拟）
+        """
+        if self.intent_resonator is None:
+            return None
+        now = time.time()
+        dt = max(now - self._last_feed_time, 0.01)
+        msg_len = len(user_message) if user_message else 0
+
+        return BehavioralSnapshot(
+            timestamp=now,
+            cursor_speed=msg_len / dt if dt > 0 else 0,
+            selection_length=msg_len,
+            chars_typed=msg_len,
+            deletions=self.stats.get("tool_errors", 0),
+            undo_count=self.stats.get("context_compressions", 0),
+            file_switches=self._round_file_switches,
+            scroll_speed=self._last_user_msg_len,
+            idle_seconds=dt,
+        )
+
+    def _feed_intent_from_results(self, user_message: str, results: list[tuple]) -> None:
+        """每轮工具执行后，从结果合成行为信号并喂入 IntentResonator。"""
+        if self.intent_resonator is None:
+            return
+        # 统计本轮文件操作
+        self._round_file_switches = sum(
+            1 for n, _, _, _, _ in results if n in ("read", "write", "edit", "glob", "grep")
+        )
+        snapshot = self._capture_behavioral_snapshot(user_message)
+        if snapshot is not None:
+            self.intent_resonator.feed(snapshot)
+            self._last_feed_time = time.time()
+            self._last_user_msg_len = snapshot.chars_typed
+            # 检查意图更新
+            intent = self.intent_resonator.get_intent()
+            if intent:
+                _log.info("intent_feed signal=%s conf=%.2f urgency=%.2f narrative=%s",
+                          intent.primary_intent.value, intent.confidence,
+                          intent.urgency, intent.narrative)
 
     def stop(self):
         self._running = False
@@ -372,8 +550,8 @@ class Agent:
                 final_response = f"[超时] 运行超过 {self.config['timeout']} 秒"
                 break
 
-            # 从 session 取消息，触顶压缩
-            messages = self.session.get_recent_messages(self.config["max_context_messages"])
+            # 从 session 取消息，触顶压缩（v2.0: 支持 token 窗口）
+            messages = self._get_token_window()
             if self._should_compress(messages):
                 messages = self._compress_context(messages)
             # 确保 messages 不为空
@@ -468,16 +646,7 @@ class Agent:
                     finally:
                         set_stream_callback(None)
 
-                results: list[tuple[str, dict, str, str, float]] = []
-                for n, a, cid, pre in tool_tasks:
-                    if pre is not None:
-                        results.append((n, a, cid, pre, 0.0))
-                        continue
-                    _t0 = time.time()
-                    r = _exec(n, a, cid)
-                    dur = (time.time() - _t0) * 1000
-                    self.debug.log_tool_call(n, a, r, dur, not r.startswith("[错误]"))
-                    results.append((n, a, cid, r, dur))
+                results = self._execute_tool_tasks(tool_tasks, _exec)
 
                 # ★ 写入 session：必须成对出现 assistant(tc=[...]) + tool(...) + tool(...)
                 #   生成的消息序列由 LLM 返回的同一组 tool_calls 保证完整性
@@ -517,6 +686,41 @@ class Agent:
                     except Exception as fb_err:
                         _log.debug("feedback_loop error: %s", fb_err)
 
+                # v2.0: 每轮工具执行后喂入 IntentResonator（合成行为信号）
+                self._feed_intent_from_results(user_message, results)
+
+                # v2.0 Phase 3: Nudge 引擎分析
+                tool_errors = [
+                    n for n, a, cid, r, d in results
+                    if r.startswith("[错误]") or r.startswith("[超时]")
+                ]
+                tool_names = [n for n, a, cid, r, d in results]
+                file_changes = sum(
+                    1 for n, a, cid, r, d in results if n in ("write", "edit", "delete")
+                )
+                top_nudges = self.nudge_engine.analyze(
+                    stats=self.stats,
+                    tool_errors=tool_errors,
+                    tool_calls=tool_names,
+                    file_changes_count=file_changes,
+                    elapsed_seconds=time.time() - self._start_time,
+                )
+                if top_nudges:
+                    _log.info("nudge_injected count=%d keys=%s",
+                              len(top_nudges), [n.key for n in top_nudges])
+                self._top_nudges = top_nudges
+
+                # v2.0 Phase 3: 后台审查
+                review_note = self.background_reviewer.check(
+                    round_num=self._tool_round,
+                    goal=user_message,
+                    modified_files=[n for n, _, _, _, _ in results if n in ("write", "edit")],
+                    tool_error_count=len(tool_errors),
+                    session_messages_count=len(self.session.messages),
+                )
+                self._last_review_round = self._tool_round
+                self._current_review_note = review_note
+
                 if not self._running:
                     break
                 continue
@@ -530,6 +734,13 @@ class Agent:
                 self.short_memory.add_note(f"用户: {user_message[:200]}", "conversation")
                 self.short_memory.add_note(f"助手: {response.content[:200]}", "conversation")
             final_response = response.content
+
+            # v2.0: 最终回复也 feed（让 resonator 感知完成）
+            if self.intent_resonator is not None:
+                snapshot = self._capture_behavioral_snapshot(user_message)
+                if snapshot is not None:
+                    self.intent_resonator.feed(snapshot)
+                    self._last_feed_time = time.time()
             break
 
         # ★ 语义记忆持久化：将本次对话存入长期记忆（带元数据）
@@ -537,6 +748,10 @@ class Agent:
             self.store_memory(f"用户: {user_message[:500]}", mem_type="user_query")
             if final_response and not final_response.startswith("["):
                 self.store_memory(f"助手: {final_response[:500]}", mem_type="assistant_response")
+
+        # v2.0: IntentResonator 持久化（磁盘）
+        if _HAS_COGNITION and self.intent_resonator is not None and self._intent_store_path:
+            self.intent_resonator.persist(self._intent_store_path)
 
         self.stats["total_duration_ms"] = (time.time() - self._start_time) * 1000
         self._running = False
@@ -701,7 +916,91 @@ class Agent:
             self.on_tool_call = _orig_on_tool_call
             self.on_message = _orig_on_message
 
+    # ── v2.0: Token 感知上下文窗口 ──
 
+    # 核心消息角色白名单 — 截断时永不丢弃
+    _PROTECTED_ROLES = frozenset({"system"})
+
+    @staticmethod
+    def _estimate_token_count(text: str) -> int:
+        """估算文本的 token 数。
+
+        混合估算：ASCII 字符按 4 字/token，非 ASCII（中文等）按 1.5 字/token。
+        保守上取整，宁可高估也不要低估导致截断后溢出。
+        """
+        if not text:
+            return 0
+        ascii_chars = sum(1 for c in text if ord(c) < 128)
+        non_ascii = len(text) - ascii_chars
+        tokens = ascii_chars / 4.0 + non_ascii / 1.5
+        return max(1, int(tokens) + 1)
+
+    @staticmethod
+    def _estimate_messages_tokens(messages: list[dict]) -> int:
+        """估算消息列表的总 token 数。"""
+        total = 0
+        for m in messages:
+            content = m.get("content", "") or ""
+            total += Agent._estimate_token_count(str(content))
+            tcs = m.get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    fn = tc.get("function", {})
+                    total += Agent._estimate_token_count(fn.get("name", ""))
+                    total += Agent._estimate_token_count(fn.get("arguments", ""))
+        return total
+
+    def _get_token_window(self) -> list[dict]:
+        """按 token 限制获取上下文窗口，替代 get_recent_messages 的消息数限制。
+
+        策略：
+          - 如果 max_context_tokens == 0，回退到消息数模式（向后兼容）
+          - 受 PROTECTED_ROLES 保护的消息永不丢弃
+          - 优先丢弃旧的非保护消息
+        """
+        max_tokens = self.config.get("max_context_tokens", 0)
+        if max_tokens <= 0:
+            return self.session.get_recent_messages(self.config.get("max_context_messages", 50))
+
+        messages = list(self.session.messages)
+        total = self._estimate_messages_tokens(messages)
+
+        if total <= max_tokens:
+            return messages
+
+        protected = [m for m in messages if m.get("role") in self._PROTECTED_ROLES]
+        candidates = [m for m in messages if m.get("role") not in self._PROTECTED_ROLES]
+
+        # 始终保留第一条 user 消息
+        first_user = None
+        for i, m in enumerate(messages):
+            if m.get("role") == "user" and m not in protected:
+                first_user = messages[i]
+                break
+        if first_user and first_user in candidates:
+            candidates.remove(first_user)
+
+        result = list(protected)
+        if first_user:
+            result.append(first_user)
+
+        remaining_budget = max_tokens - self._estimate_messages_tokens(result)
+        keep = []
+        for m in reversed(candidates):
+            mt = self._estimate_token_count(str(m.get("content", "")))
+            if mt <= remaining_budget:
+                keep.insert(0, m)
+                remaining_budget -= mt
+            else:
+                break
+
+        result.extend(keep)
+        result.sort(key=lambda x: x.get("timestamp", 0))
+
+        _log.info("token_window total=%d limit=%d kept=%d dropped=%d",
+                  total, max_tokens, len(result), len(messages) - len(result))
+        self.stats["context_compressions"] += 1
+        return result
 
     # ── 上下文压缩 ──
 
@@ -817,9 +1116,26 @@ class Agent:
         except Exception:
             pass
 
+        # v2.0: 根据角色过滤工具
+        raw_tools = get_all_tools()
+        filtered_tools = filter_tools_by_role(raw_tools, self.role)
+        if self.role != AgentRole.AGENT:
+            custom_sections.append(("角色指令", get_role_system_prompt_suffix(self.role)))
+
+        # v2.0 Phase 3: Nudge + 审查结果注入
+        nudge_block = self.nudge_engine.get_nudge_prompt_block(
+            getattr(self, '_top_nudges', [])
+        )
+        if nudge_block:
+            custom_sections.append(("优化建议", nudge_block))
+
+        review_note = getattr(self, '_current_review_note', None)
+        if review_note:
+            custom_sections.append(("会话审查", review_note.to_prompt_block()))
+
         context = PromptContext(
             user_id=self.session.id,
-            tools=get_all_tools(),
+            tools=filtered_tools,
             workflow_mode=self.config["workflow_mode"],
             constraints=self._build_constraints(),
             memories=self._search_memories(),
@@ -828,7 +1144,30 @@ class Agent:
             session_state=self.session.get_state() if self.config["enable_adaptations"] else None,
             custom_sections=custom_sections,
         )
-        return self.prompt_builder.build(context)
+
+        # v2.0: 分层构建 → 支持 prompt caching
+        stable_prefix, full_prompt = self.prompt_builder.build_tiered(context)
+
+        # 缓存稳定层：如果前缀变才更新 provider cache
+        _cache_key = (context.workflow_mode, json.dumps(context.tools, sort_keys=True))
+        if getattr(self, '_prompt_stable_cache_key', None) != _cache_key:
+            self._prompt_stable_cache_key = _cache_key
+            self._cached_stable_prefix = stable_prefix
+            # 通知 provider 更新缓存前缀
+            if hasattr(self, 'provider') and self.provider is not None:
+                self.provider.set_cache_prefix(
+                    [stable_prefix] if stable_prefix else []
+                )
+            if 'cache_hits' not in self.stats:
+                self.stats['cache_hits_stable'] = 0
+                self.stats['cache_misses'] = 0
+            self.stats.setdefault('cache_misses', 0)
+            self.stats['cache_misses'] += 1
+        else:
+            self.stats.setdefault('cache_hits_stable', 0)
+            self.stats['cache_hits_stable'] += 1
+
+        return full_prompt
 
     def _build_constraints(self) -> dict:
         return {
@@ -906,7 +1245,10 @@ class Agent:
         root_path = os.path.abspath(root_path)
         if not os.path.isdir(root_path):
             os.makedirs(root_path, exist_ok=True)
-        # 同步到 ToolContext 的 working_dir（供 bash 等工具使用）
+        # 同步 PathValidator（v1.0.1: 修复路径校验不随 workspace 更新的问题）
+        if self.path_validator is not None:
+            self.path_validator.workspace_root = os.path.realpath(root_path)
+        # 同步 ToolContext 的 working_dir（供 bash 等工具使用）
         try:
             from .tools.registry import get_registry
             reg = get_registry()

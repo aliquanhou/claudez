@@ -256,3 +256,8 @@ def get_semantic_memory(storage_dir: str | None = None) -> SemanticMemory:
     if _INSTANCE is None:
         _INSTANCE = SemanticMemory(storage_dir)
     return _INSTANCE
+
+
+def create_isolated_memory(storage_dir: str | None = None) -> SemanticMemory:
+    """创建一个隔离的语义记忆实例（不修改全局单例，供子 Agent 使用）。"""
+    return SemanticMemory(storage_dir)

@@ -16,12 +16,16 @@ from __future__ import annotations
 import json
 import time
 import traceback
+from collections import deque
 from datetime import datetime
 from typing import Any
 
 
 class DebugCollector:
-    """结构化调试数据收集器。"""
+    """结构化调试数据收集器。
+
+    v2.0: 所有列表改用 deque(maxlen=1000) 防止内存无限增长。
+    """
 
     def __init__(self, session_id: str = "", model: str = "", version: str = "2.1"):
         self.session_id = session_id
@@ -33,12 +37,12 @@ class DebugCollector:
                 "model": model,
                 "agent_version": version,
             },
-            "tool_calls": [],
-            "decisions": [],
-            "message_flow": [],
-            "api_calls": [],
-            "context_snapshots": [],
-            "errors": [],
+            "tool_calls": deque(maxlen=1000),
+            "decisions": deque(maxlen=1000),
+            "message_flow": deque(maxlen=500),
+            "api_calls": deque(maxlen=1000),
+            "context_snapshots": deque(maxlen=500),
+            "errors": deque(maxlen=500),
         }
 
     # ── 日志方法 ──

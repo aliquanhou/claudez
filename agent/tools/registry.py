@@ -265,6 +265,11 @@ def get_registry() -> ToolRegistry:
     return _REGISTRY
 
 
+def create_isolated_registry() -> ToolRegistry:
+    """创建一个隔离的工具注册表（不修改全局单例，供子 Agent 使用）。"""
+    return ToolRegistry()
+
+
 def tool(fn=None, *, name=None, description=None, category="general",
          timeout=60.0, require_confirmation=False,
          is_readonly=False, is_concurrency_safe=False):

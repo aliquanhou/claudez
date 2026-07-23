@@ -215,6 +215,7 @@ def bash(command: str, timeout: int = 30) -> str:
     """
     import platform
     import threading
+    import re
 
     stream_cb = None
     try:
@@ -222,6 +223,11 @@ def bash(command: str, timeout: int = 30) -> str:
         stream_cb = get_stream_callback()
     except Exception:
         pass
+
+    # ── Windows 兼容预处理（v1.0.1） ──
+    if platform.system() == "Windows":
+        # mkdir -p → mkdir（Windows CMD 不支持 -p，且自身已支持递归创建）
+        command = re.sub(r'\bmkdir\s+-p\b', 'mkdir', command)
 
     # 自动 cd 到工作空间目录
     try:

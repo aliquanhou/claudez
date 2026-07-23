@@ -6,4 +6,4 @@
 """
 
 from .short_term import ShortTermMemory
-from .semantic import SemanticMemory, get_semantic_memory
+from .semantic import SemanticMemory, get_semantic_memory, create_isolated_memory

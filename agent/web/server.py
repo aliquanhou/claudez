@@ -51,6 +51,41 @@ class WorkspaceBody(BaseModel):
     name: str = ""
 
 
+class ConfigUpdateBody(BaseModel):
+    """配置更新请求体 — 所有字段可选，仅更新传入的字段。"""
+    model: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    api_timeout: int | None = None
+    disable_thinking: bool | None = None
+    enable_caching: bool | None = None
+    max_cache_keys: int | None = None
+    max_context_tokens: int | None = None
+    max_context_messages: int | None = None
+    context_compress_at: float | None = None
+    parallel_tools: bool | None = None
+    tool_timeout: float | None = None
+    max_tool_calls_per_turn: int | None = None
+    max_consecutive_errors: int | None = None
+    sandbox_mode: str | None = None
+    sandbox_danger_threshold: int | None = None
+    workflow_mode: str | None = None
+    pipeline_max_retries: int | None = None
+    enable_nudge: bool | None = None
+    enable_memory: bool | None = None
+    memory_search_top_k: int | None = None
+    permission_mode: str | None = None
+    confirmed: bool = False  # v2.0: 高危操作二次确认标记
+
+
+# 高危操作白名单（需要二次确认）
+_HIGH_RISK_CONFIG_KEYS = {"sandbox_mode", "permission_mode", "enable_caching", "model", "api_key", "base_url"}
+
+
 # 工作空间根目录（模块级，供 _build_app 内路由函数访问）
 _WORKSPACE_ROOT = os.path.abspath("D:/ForgeX")
 
@@ -405,6 +440,369 @@ def _build_app(agent) -> FastAPI:
             return data
         except Exception as e:
             return {"os": "", "total_available": 0, "tools": {}, "error": str(e)}
+
+    # ═══════════════════════════════════════════════
+    # WebUI 2.0 — 四大可视化模块 API
+    # ═══════════════════════════════════════════════
+
+    # ── S4: 流水线状态看板 ──
+    @app.get("/api/pipeline/status")
+    async def api_pipeline_status():
+        """获取流水线当前执行状态。"""
+        try:
+            orch = getattr(agent, '_pipeline_orch', None)
+            if orch is None:
+                return {"active": False, "message": "无活跃流水线"}
+            task = orch.get_task()
+            if task is None:
+                return {"active": False, "message": "无活跃任务"}
+            return {
+                "active": True,
+                "task_id": task.id,
+                "goal": task.goal[:200],
+                "phase": task.phase.value,
+                "plan_text": task.plan_text[:500] if task.plan_text else "",
+                "verdict": task.verdict,
+                "retry_count": task.retry_count,
+                "max_retries": task.max_retries,
+                "error": task.error,
+                "created_at": task.created_at,
+            }
+        except Exception as e:
+            return {"active": False, "error": str(e)}
+
+    @app.get("/api/pipeline/history")
+    async def api_pipeline_history(limit: int = 10):
+        """获取流水线历史执行记录。"""
+        try:
+            if not hasattr(agent, '_pipeline_history'):
+                return {"history": []}
+            hist = getattr(agent, '_pipeline_history', [])
+            return {"history": hist[-limit:]}
+        except Exception as e:
+            return {"history": [], "error": str(e)}
+
+    # ── S5: Skill & 长期记忆浏览器 ──
+    @app.get("/api/skills")
+    async def api_skills(query: str = ""):
+        """获取技能列表（支持搜索）。"""
+        try:
+            sm = getattr(agent, 'skill_manager', None)
+            if sm is None:
+                return {"skills": []}
+            if query:
+                results = sm.search(query)
+            else:
+                results = sm.all
+            return {"skills": [s.to_dict() for s in results]}
+        except Exception as e:
+            return {"skills": [], "error": str(e)}
+
+    @app.get("/api/skills/{skill_id}")
+    async def api_skill_detail(skill_id: str):
+        """获取单个技能详情。"""
+        try:
+            sm = getattr(agent, 'skill_manager', None)
+            if sm is None:
+                return {"error": "skill_manager 未初始化"}
+            skill = sm.get(skill_id)
+            if skill is None:
+                return {"error": "技能不存在"}
+            return skill.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/skills/{skill_id}/execute")
+    async def api_skill_execute(skill_id: str):
+        """执行一个技能（触发 Pipeline）。"""
+        try:
+            sm = getattr(agent, 'skill_manager', None)
+            if sm is None:
+                return {"status": "error", "message": "skill_manager 未初始化"}
+            skill = sm.get(skill_id)
+            if skill is None:
+                return {"status": "error", "message": "技能不存在"}
+            # 记录使用
+            sm.record_usage(skill_id)
+            # 通过 Agent 执行
+            if skill.steps:
+                prompt = f"执行技能: {skill.name}\n\n{skill.description}\n\n步骤:\n"
+                for i, step in enumerate(skill.steps, 1):
+                    prompt += f"{i}. [{step.action}] {step.target} — {step.description}\n"
+                agent.run(prompt)
+            return {"status": "ok", "message": f"技能 {skill.name} 已触发执行"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.post("/api/skills/{skill_id}/toggle")
+    async def api_skill_toggle(skill_id: str):
+        """切换技能置顶状态。"""
+        try:
+            sm = getattr(agent, 'skill_manager', None)
+            if sm is None:
+                return {"status": "error"}
+            skill = sm.get(skill_id)
+            if skill is None:
+                return {"status": "error", "message": "技能不存在"}
+            sm.update(skill_id, is_pinned=not skill.is_pinned)
+            return {"status": "ok", "pinned": not skill.is_pinned}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.delete("/api/skills/{skill_id}")
+    async def api_skill_delete(skill_id: str):
+        """删除技能。"""
+        try:
+            sm = getattr(agent, 'skill_manager', None)
+            if sm is None:
+                return {"status": "error"}
+            ok = sm.delete(skill_id)
+            return {"status": "ok" if ok else "error"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.get("/api/memory/intents")
+    async def api_memory_intents():
+        """获取意图历史快照。"""
+        try:
+            ir = getattr(agent, 'intent_resonator', None)
+            if ir is None:
+                return {"intents": []}
+            history = getattr(ir, '_history', [])
+            return {"intents": [
+                {
+                    "timestamp": s.timestamp,
+                    "chars_typed": s.chars_typed,
+                    "deletions": s.deletions,
+                    "file_switches": s.file_switches,
+                } for s in history[-50:]
+            ]}
+        except Exception as e:
+            return {"intents": [], "error": str(e)}
+
+    # ── S3: TraceID 全链路日志检索 ──
+    @app.get("/api/logs/traces")
+    async def api_logs_traces(trace_id: str = "", limit: int = 50):
+        """检索 TraceID 日志。"""
+        try:
+            dc = getattr(agent, 'debug', None)
+            if dc is None:
+                return {"traces": []}
+            data = getattr(dc, 'data', {})
+            # 合并所有事件类型并按时间排序
+            events = []
+            for tc in list(data.get("tool_calls", [])):
+                events.append({
+                    "trace_id": trace_id or "global",
+                    "type": "tool_call",
+                    "name": tc.get("name"),
+                    "timestamp": tc.get("timestamp"),
+                    "duration_ms": tc.get("duration_ms"),
+                    "success": tc.get("success"),
+                    "result_preview": tc.get("result_preview", "")[:200],
+                })
+            for api in list(data.get("api_calls", [])):
+                events.append({
+                    "trace_id": trace_id or "global",
+                    "type": "api_call",
+                    "model": api.get("model"),
+                    "timestamp": api.get("timestamp"),
+                    "tokens": api.get("usage", {}).get("total_tokens", 0),
+                    "stop_reason": api.get("stop_reason"),
+                })
+            for err in list(data.get("errors", [])):
+                events.append({
+                    "trace_id": trace_id or "global",
+                    "type": "error",
+                    "source": err.get("source"),
+                    "message": err.get("message")[:200],
+                    "timestamp": err.get("timestamp"),
+                })
+            # 按 timestamp 排序
+            events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            return {"traces": events[:limit]}
+        except Exception as e:
+            return {"traces": [], "error": str(e)}
+
+    @app.get("/api/logs/export/{trace_id}")
+    async def api_logs_export(trace_id: str = ""):
+        """导出单条 Trace 完整链路日志。"""
+        try:
+            dc = getattr(agent, 'debug', None)
+            if dc is None:
+                return {"error": "debug collector 不可用"}
+            md = dc.export_markdown()
+            return {"markdown": md, "trace_id": trace_id or "global"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ── S2: 可视化配置操作台 ──
+    @app.get("/api/config/full")
+    async def api_config_full():
+        """获取完整配置（含 v2.0 参数）。"""
+        cfg = agent.config
+        return {
+            # LLM
+            "model": cfg.get("model", ""),
+            "provider": cfg.get("provider", ""),
+            "api_key": cfg.get("api_key", ""),
+            "base_url": cfg.get("base_url", ""),
+            "temperature": cfg.get("temperature", 0.0),
+            "max_tokens": cfg.get("max_tokens", 8192),
+            "top_p": cfg.get("top_p", 1.0),
+            "api_timeout": cfg.get("api_timeout", 30),
+            "disable_thinking": cfg.get("disable_thinking", True),
+            # 缓存
+            "enable_caching": cfg.get("enable_caching", False),
+            "max_cache_keys": cfg.get("max_cache_keys", 100),
+            # Token 窗口
+            "max_context_tokens": cfg.get("max_context_tokens", 0),
+            "max_context_messages": cfg.get("max_context_messages", 50),
+            "context_compress_at": cfg.get("context_compress_at", 0.85),
+            # 执行
+            "parallel_tools": cfg.get("parallel_tools", True),
+            "tool_timeout": cfg.get("tool_timeout", 60.0),
+            "max_tool_calls_per_turn": cfg.get("max_tool_calls_per_turn", 25),
+            "max_consecutive_errors": cfg.get("max_consecutive_errors", 5),
+            # 沙箱
+            "sandbox_mode": cfg.get("sandbox_mode", "disabled"),
+            "sandbox_danger_threshold": cfg.get("sandbox_danger_threshold", 80),
+            # 流水线
+            "workflow_mode": cfg.get("workflow_mode", "agent"),
+            "pipeline_max_retries": cfg.get("pipeline_max_retries", 3),
+            # Nudge
+            "enable_nudge": cfg.get("enable_nudge", True),
+            # 记忆
+            "enable_memory": cfg.get("enable_memory", True),
+            "memory_search_top_k": cfg.get("memory_search_top_k", 5),
+            # 权限
+            "permission_mode": cfg.get("permission_mode", "auto"),
+            # 统计
+            "stats": {
+                "llm_calls": agent.stats.get("llm_calls", 0),
+                "tool_calls": agent.stats.get("tool_calls", 0),
+                "tool_errors": agent.stats.get("tool_errors", 0),
+                "total_tokens": agent.stats.get("total_tokens", 0),
+                "cache_hits_stable": agent.stats.get("cache_hits_stable", 0),
+                "cache_misses": agent.stats.get("cache_misses", 0),
+                "context_compressions": agent.stats.get("context_compressions", 0),
+            },
+        }
+
+    @app.post("/api/config/update")
+    async def api_config_update(body: ConfigUpdateBody):
+        """更新配置（高危参数需 body.confirmed=True 二次确认）。"""
+        confirmed = body.confirmed
+        updates = body.model_dump(exclude_none=True)
+        updates.pop("confirmed", None)
+        if not updates:
+            return {"status": "error", "message": "没有要更新的参数"}
+
+        # 高危参数检查
+        high_risk = [k for k in updates if k in _HIGH_RISK_CONFIG_KEYS]
+        if high_risk and not confirmed:
+            return {
+                "status": "confirm_required",
+                "message": f"以下参数为高危配置，请确认: {', '.join(high_risk)}",
+                "keys": high_risk,
+            }
+
+        changed = []
+        needs_rebuild = False
+        for key, value in updates.items():
+            if key in agent.config:
+                old_val = agent.config.get(key)
+                agent.config[key] = value
+                changed.append(f"{key}: {old_val} -> {value}")
+                if key in ("provider", "api_key", "base_url", "model", "api_timeout", "max_tokens", "temperature", "top_p", "disable_thinking"):
+                    needs_rebuild = True
+
+        if needs_rebuild:
+            try:
+                from agent.providers import create_provider
+                agent.provider = create_provider(agent.config)
+                agent._setup_provider_callbacks()
+                _log.info("provider_rebuilt for llm config change")
+            except Exception as e:
+                _log.warning("provider_rebuild_failed: %s", e)
+
+        # 持久化到磁盘 config.json
+        try:
+            _config_path = Path(__file__).parent.parent.parent / "config.json"
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(agent.config, f, ensure_ascii=False, indent=4)
+            _log.info("config_persisted to %s", _config_path)
+        except Exception as e:
+            _log.warning("config_persist_failed: %s", e)
+
+        _log.info("config_bulk_updated: %s", "; ".join(changed))
+        return {"status": "ok", "changed": changed}
+
+    # ── 安全校验拦截 ──
+    class ValidateActionBody(BaseModel):
+        action: str          # "tool_call" | "config_change" | "skill_execute"
+        params: dict = {}
+        intent: str = ""
+
+    @app.post("/api/validate")
+    async def api_validate_action(body: ValidateActionBody):
+        """前置校验：所有下发操作经铁三角验证。"""
+        result = {"allowed": True, "reason": "", "risk_level": "low"}
+
+        try:
+            # 工具调用校验
+            if body.action == "tool_call":
+                tool_name = body.params.get("name", "")
+                tool_args = body.params.get("args", {})
+
+                # PathValidator
+                if hasattr(agent, 'path_validator') and agent.path_validator is not None:
+                    safe, reason = agent._validate_tool_path(tool_name, tool_args)
+                    if not safe:
+                        result["allowed"] = False
+                        result["reason"] = f"路径安全校验失败: {reason}"
+                        result["risk_level"] = "high"
+                        return result
+
+                # DangerScore 对 bash 命令评分
+                if tool_name == "bash":
+                    cmd = tool_args.get("command", "")
+                    from agent.sandbox.danger_score import DangerScore
+                    score = DangerScore.score(cmd)
+                    threshold = agent.config.get("sandbox_danger_threshold", 80)
+                    if score >= threshold:
+                        result["allowed"] = False
+                        result["reason"] = DangerScore.get_risk_advice(score, cmd)
+                        result["risk_level"] = DangerScore.get_risk_level(score)
+                        return result
+
+            # 配置变更校验（后端二次确认已由 confirmed 参数处理）
+            if body.action == "config_change":
+                params = body.params
+                high_risk = [k for k in params if k in _HIGH_RISK_CONFIG_KEYS]
+                if high_risk:
+                    result["confirm_required"] = True
+                    result["reason"] = f"高危参数需二次确认: {', '.join(high_risk)}"
+                    result["risk_level"] = "high"
+
+            # 技能执行校验
+            if body.action == "skill_execute":
+                skill_id = body.params.get("skill_id", "")
+                if hasattr(agent, 'skill_manager') and agent.skill_manager is not None:
+                    skill = agent.skill_manager.get(skill_id)
+                    if skill and skill.steps:
+                        for step in skill.steps:
+                            if step.action in ("bash", "delete", "write"):
+                                # 高危操作需确认
+                                result["warning"] = f"技能包含 {step.action} 操作，请确认执行范围"
+                                result["risk_level"] = "medium"
+
+        except Exception as e:
+            result["allowed"] = False
+            result["reason"] = f"校验异常: {e}"
+            result["risk_level"] = "high"
+
+        return result
 
     return app
 

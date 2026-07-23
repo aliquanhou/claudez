@@ -193,6 +193,66 @@ class PlanExecutor:
             else:
                 step.parallel_group = 0  # 串行
 
+    @staticmethod
+    def from_llm_tool_calls(tool_calls: list[dict]) -> list[ExecutionStep]:
+        """直接从 LLM tool_calls 构建 ExecutionStep（绕过 Plan 对象）。
+
+        v2.0: 供核心循环通过 ToolOrchestrator 并行执行工具。
+        根据工具名称自动推断 action 和 concurrency-safe 属性。
+        """
+        steps: list[ExecutionStep] = []
+
+        # 工具名称 → action 映射
+        ACTION_MAP = {
+            "read": "read", "write": "write", "edit": "edit",
+            "delete": "delete", "bash": "execute", "shell": "execute",
+            "glob": "read", "grep": "read",
+            "web_fetch": "read", "web_search": "read", "web": "read",
+            "process": "read", "monitor": "read",
+        }
+
+        # 可安全并行的工具集合
+        CONCURRENT_SAFE_TOOLS = {
+            "read", "glob", "grep", "web_fetch", "web_search", "web",
+            "process", "monitor",
+        }
+
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+            cid = tc.get("id", "")
+
+            action = ACTION_MAP.get(name, "execute")
+            is_safe = name in CONCURRENT_SAFE_TOOLS
+
+            target = (
+                args.get("file_path") or args.get("command")
+                or args.get("url") or args.get("pattern") or name
+            )
+
+            step = ExecutionStep(
+                id=cid or str(uuid.uuid4()),
+                action=action,
+                target=str(target),
+                content=args.get("content", ""),
+                metadata={
+                    "tool_name": name,
+                    "tool_args": dict(args),
+                    "tool_call_id": cid,
+                    "is_concurrency_safe": is_safe,
+                    "description": f"LLM tool: {name}",
+                },
+            )
+            steps.append(step)
+
+        # 可并行的步骤标记为同组
+        safe_ids = {s.id for s in steps if s.metadata.get("is_concurrency_safe")}
+        for s in steps:
+            if s.id in safe_ids:
+                s.parallel_group = 1  # 同组并行
+
+        return steps
+
     def summarize(self, steps: list[ExecutionStep]) -> str:
         """生成人类可读的步骤摘要。"""
         if not steps:

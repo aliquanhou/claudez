@@ -6,9 +6,11 @@ v0.3.4 规则引擎：7 条规则覆盖 7 种意图信号。
 
 from __future__ import annotations
 
+import json
+import os
 import time
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional
 from enum import Enum
 
@@ -94,20 +96,46 @@ class IntentResonator:
     CONFIDENT_IDLE_MAX = 3
     CONFIDENT_DELETIONS_RATIO = 0.1
 
-    def __init__(self, window_size: int = 20) -> None:
+    def __init__(self, window_size: int = 20, ttl_seconds: int = 300, max_history: int = 100) -> None:
+        """初始化意图共鸣器。
+
+        Args:
+            window_size: 滑动窗口大小（参与评分的历史快照数）
+            ttl_seconds: 快照 TTL 秒数（超过此时间的快照被自动淘汰）
+            max_history: 历史快照最大数量（超过时 LRU 淘汰最旧）
+        """
         self._window_size = window_size
+        self._ttl_seconds = ttl_seconds
+        self._max_history = max_history
         self._history: list[BehavioralSnapshot] = []
 
     # ── 公共接口 ──
 
+    def _purge_expired(self) -> None:
+        """清理超过 TTL 的过期快照。"""
+        if self._ttl_seconds <= 0:
+            return
+        now = time.time()
+        cutoff = now - self._ttl_seconds
+        before = len(self._history)
+        self._history = [s for s in self._history if s.timestamp >= cutoff]
+        if len(self._history) < before:
+            pass  # 静默清理
+
     def feed(self, snapshot: BehavioralSnapshot) -> None:
         """喂入一个行为快照。"""
+        self._purge_expired()
         self._history.append(snapshot)
-        if len(self._history) > self._window_size:
+        # LRU 淘汰：超过 max_history 时移除最旧的
+        while len(self._history) > self._max_history:
             self._history.pop(0)
+        # 同时确保窗口大小不超限
+        if len(self._history) > self._window_size:
+            self._history = self._history[-self._window_size:]
 
     def get_intent(self) -> Optional[IntentVector]:
         """返回当前意图，数据不足时返回 None。"""
+        self._purge_expired()
         if len(self._history) < 3:
             return None
 
@@ -135,6 +163,85 @@ class IntentResonator:
     def reset(self) -> None:
         """清空历史，重置状态。"""
         self._history.clear()
+
+    # ── 持久化接口 ──
+
+    def persist(self, filepath: str) -> None:
+        """将历史快照持久化到 JSON 文件。
+
+        Args:
+            filepath: 存储路径（.json）
+        """
+        try:
+            dirname = os.path.dirname(filepath)
+            if dirname and not os.path.exists(dirname):
+                os.makedirs(dirname, exist_ok=True)
+            data = {
+                "ttl_seconds": self._ttl_seconds,
+                "max_history": self._max_history,
+                "snapshots": [
+                    {
+                        "timestamp": s.timestamp,
+                        "cursor_speed": s.cursor_speed,
+                        "selection_length": s.selection_length,
+                        "chars_typed": s.chars_typed,
+                        "deletions": s.deletions,
+                        "undo_count": s.undo_count,
+                        "file_switches": s.file_switches,
+                        "scroll_speed": s.scroll_speed,
+                        "idle_seconds": s.idle_seconds,
+                    }
+                    for s in self._history
+                ],
+            }
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            import logging
+            logging.getLogger("claudez.cognition").warning(
+                "intent_persist_error path=%s %s", filepath, e
+            )
+
+    def load(self, filepath: str) -> None:
+        """从 JSON 文件加载历史快照。
+
+        Args:
+            filepath: 存储路径（.json）
+        """
+        try:
+            if not os.path.exists(filepath):
+                return
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw = data.get("snapshots", [])
+            self._history = [
+                BehavioralSnapshot(
+                    timestamp=s.get("timestamp", 0.0),
+                    cursor_speed=s.get("cursor_speed", 0.0),
+                    selection_length=s.get("selection_length", 0),
+                    chars_typed=s.get("chars_typed", 0),
+                    deletions=s.get("deletions", 0),
+                    undo_count=s.get("undo_count", 0),
+                    file_switches=s.get("file_switches", 0),
+                    scroll_speed=s.get("scroll_speed", 0.0),
+                    idle_seconds=s.get("idle_seconds", 0.0),
+                )
+                for s in raw
+            ]
+            self._purge_expired()
+            # 应用 max_history 限制（从后往前保留最新的）
+            if len(self._history) > self._max_history:
+                self._history = self._history[-self._max_history:]
+            import logging
+            logging.getLogger("claudez.cognition").info(
+                "intent_load path=%s snapshots=%d ttl=%ds",
+                filepath, len(self._history), self._ttl_seconds
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger("claudez.cognition").warning(
+                "intent_load_error path=%s %s", filepath, e
+            )
 
     # ── 内部：滑动平均 ──
 

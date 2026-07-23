@@ -386,6 +386,17 @@ class DynamicPromptBuilder:
             ("examples", lambda ctx: _build_examples_block(ctx.workflow_mode)),
         ]
 
+    STABLE_SECTIONS = {"role", "tools"}
+    """稳定层节段（这些很少变化，适合做 cache prefix）。"""
+
+    def _build_section(self, name: str, context: PromptContext) -> str:
+        """构建单个节段。"""
+        for sname, builder in self._sections:
+            if sname == name:
+                content = builder(context)
+                return content if content.strip() else ""
+        return ""
+
     def build(self, context: PromptContext) -> str:
         """构建完整的系统提示词。
 
@@ -395,6 +406,29 @@ class DynamicPromptBuilder:
         Returns:
             完整的系统提示词字符串
         """
+        return self._build_all(context)
+
+    def build_tiered(self, context: PromptContext) -> tuple[str, str]:
+        """构建分层的系统提示词，返回 (stable_prefix, full_prompt)。
+
+        v2.0: 支持 prompt caching。
+        stable_prefix = 角色定义 + 工具列表（适合缓存）
+        full_prompt = 完整提示词
+
+        比较稳定层的前缀是否变化，供调用方决定是否刷新缓存。
+        """
+        stable = ""
+        for name, builder in self._sections:
+            if name in self.STABLE_SECTIONS:
+                content = builder(context)
+                if content.strip():
+                    stable += content + "\n\n"
+
+        full = self._build_all(context)
+        return stable.rstrip(), full
+
+    def _build_all(self, context: PromptContext) -> str:
+        """构建完整提示词（内部方法）。"""
         parts = []
 
         for name, builder in self._sections:

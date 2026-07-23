@@ -1,5 +1,40 @@
+# Python
 __pycache__/
 *.pyc
-agent/.claudez/
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-*.db
+Thumbs.db
+
+# Environment
+venv/
+.venv/
+env/
+.env
+
+# Project
+_trace.log
+_test_*.py
+_*.py
+*.bak
+*.output
+*.zip
+agent/.claudez/
+
+# Build
+*.so
+.gradle/
+build/
+node_modules/
